@@ -29,12 +29,15 @@ import org.apache.kafka.common.errors.SerializationException;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
 
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import io.confluent.kafka.serializers.AbstractKafkaAvroSerDeConfig;
 import kafka.common.KafkaException;
-import kafka.producer.KeyedMessage;
 import kafka.common.MessageReader;
 import io.confluent.kafka.serializers.AbstractKafkaAvroSerializer;
 
@@ -98,8 +101,10 @@ public class AvroMessageReader extends AbstractKafkaAvroSerializer implements Me
   /**
    * For testing only.
    */
-  AvroMessageReader(SchemaRegistryClient schemaRegistryClient, Schema keySchema, Schema valueSchema,
-                    String topic, boolean parseKey, BufferedReader reader) {
+  AvroMessageReader(
+      SchemaRegistryClient schemaRegistryClient, Schema keySchema, Schema valueSchema,
+      String topic, boolean parseKey, BufferedReader reader, boolean autoRegister
+  ) {
     this.schemaRegistry = schemaRegistryClient;
     this.keySchema = keySchema;
     this.valueSchema = valueSchema;
@@ -108,6 +113,7 @@ public class AvroMessageReader extends AbstractKafkaAvroSerializer implements Me
     this.valueSubject = topic + "-value";
     this.parseKey = parseKey;
     this.reader = reader;
+    this.autoRegisterSchema = autoRegister;
   }
 
   @Override
@@ -122,13 +128,16 @@ public class AvroMessageReader extends AbstractKafkaAvroSerializer implements Me
     if (props.containsKey("ignore.error")) {
       ignoreError = props.getProperty("ignore.error").trim().toLowerCase().equals("true");
     }
-    reader = new BufferedReader(new InputStreamReader(inputStream));
+    reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
     String url = props.getProperty(AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG);
     if (url == null) {
       throw new ConfigException("Missing schema registry url!");
     }
+
+    Map<String, Object> originals = getPropertiesMap(props);
+
     schemaRegistry = new CachedSchemaRegistryClient(
-        url, AbstractKafkaAvroSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_DEFAULT);
+        url, AbstractKafkaAvroSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_DEFAULT, originals);
     if (!props.containsKey("value.schema")) {
       throw new ConfigException("Must provide the Avro schema string in value.schema");
     }
@@ -145,6 +154,19 @@ public class AvroMessageReader extends AbstractKafkaAvroSerializer implements Me
     }
     keySubject = topic + "-key";
     valueSubject = topic + "-value";
+    if (props.containsKey("auto.register")) {
+      this.autoRegisterSchema = Boolean.valueOf(props.getProperty("auto.register").trim());
+    } else {
+      this.autoRegisterSchema = true;
+    }
+  }
+
+  private Map<String, Object> getPropertiesMap(Properties props) {
+    Map<String, Object> originals = new HashMap<>();
+    for (final String name: props.stringPropertyNames()) {
+      originals.put(name, props.getProperty(name));
+    }
+    return originals;
   }
 
   @Override

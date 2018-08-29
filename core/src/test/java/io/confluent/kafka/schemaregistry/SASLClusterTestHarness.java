@@ -21,7 +21,7 @@ import kafka.server.KafkaConfig;
 import kafka.utils.JaasTestUtils;
 import kafka.utils.TestUtils;
 import org.apache.kafka.common.config.SaslConfigs;
-import org.apache.kafka.common.protocol.SecurityProtocol;
+import org.apache.kafka.common.security.auth.SecurityProtocol;
 import org.apache.kafka.common.security.authenticator.LoginManager;
 import org.junit.After;
 import org.junit.Before;
@@ -31,7 +31,6 @@ import scala.Option;
 import scala.collection.JavaConversions;
 import scala.collection.Seq;
 import scala.collection.immutable.List;
-import scala.collection.mutable.Buffer;
 
 import javax.security.auth.login.Configuration;
 import java.io.File;
@@ -112,7 +111,7 @@ public class SASLClusterTestHarness extends ClusterTestHarness {
             brokerId, zkConnect, false, false, TestUtils.RandomPort(), saslInterBrokerSecurityProtocol,
             trustStoreFileOption, EMPTY_SASL_PROPERTIES, false, true, TestUtils.RandomPort(),
             false, TestUtils.RandomPort(),
-            false, TestUtils.RandomPort(), Option.<String>empty());
+            false, TestUtils.RandomPort(), Option.<String>empty(), 1, false);
 
     injectProperties(props);
     props.setProperty("zookeeper.connection.timeout.ms", "30000");

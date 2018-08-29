@@ -16,6 +16,25 @@
 
 package io.confluent.kafka.schemaregistry.storage;
 
+import org.apache.avro.reflect.Nullable;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.Vector;
+import java.util.concurrent.TimeUnit;
+
 import io.confluent.common.metrics.JmxReporter;
 import io.confluent.common.metrics.MetricConfig;
 import io.confluent.common.metrics.MetricName;
@@ -42,77 +61,47 @@ import io.confluent.kafka.schemaregistry.exceptions.SchemaRegistryRequestForward
 import io.confluent.kafka.schemaregistry.exceptions.SchemaRegistryStoreException;
 import io.confluent.kafka.schemaregistry.exceptions.SchemaRegistryTimeoutException;
 import io.confluent.kafka.schemaregistry.exceptions.UnknownMasterException;
+import io.confluent.kafka.schemaregistry.masterelector.kafka.KafkaGroupMasterElector;
+import io.confluent.kafka.schemaregistry.masterelector.zookeeper.ZookeeperMasterElector;
 import io.confluent.kafka.schemaregistry.rest.SchemaRegistryConfig;
+import io.confluent.kafka.schemaregistry.rest.SslFactory;
 import io.confluent.kafka.schemaregistry.rest.VersionId;
 import io.confluent.kafka.schemaregistry.rest.exceptions.Errors;
 import io.confluent.kafka.schemaregistry.storage.exceptions.StoreException;
 import io.confluent.kafka.schemaregistry.storage.exceptions.StoreInitializationException;
 import io.confluent.kafka.schemaregistry.storage.exceptions.StoreTimeoutException;
 import io.confluent.kafka.schemaregistry.storage.serialization.Serializer;
-import io.confluent.kafka.schemaregistry.zookeeper.SchemaRegistryIdentity;
-import io.confluent.kafka.schemaregistry.zookeeper.ZookeeperMasterElector;
 import io.confluent.rest.Application;
 import io.confluent.rest.RestConfig;
 import io.confluent.rest.exceptions.RestException;
-import kafka.utils.ZkUtils;
 
-import org.apache.kafka.common.config.ConfigException;
-
-import scala.Tuple2;
-
-import org.I0Itec.zkclient.exception.ZkNodeExistsException;
-import org.apache.avro.reflect.Nullable;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.common.security.JaasUtils;
-import org.apache.zookeeper.data.Stat;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.io.IOException;
-import java.net.URI;
-import java.util.Arrays;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.Vector;
-import java.util.concurrent.TimeUnit;
-
-public class KafkaSchemaRegistry implements SchemaRegistry {
+public class KafkaSchemaRegistry implements SchemaRegistry, MasterAwareSchemaRegistry {
 
   /**
    * Schema versions under a particular subject are indexed from MIN_VERSION.
    */
   public static final int MIN_VERSION = 1;
   public static final int MAX_VERSION = Integer.MAX_VALUE;
-  public static final int ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE = 20;
-  public static final String ZOOKEEPER_SCHEMA_ID_COUNTER = "/schema_id_counter";
-  private static final int ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_WRITE_RETRY_BACKOFF_MS = 50;
   private static final Logger log = LoggerFactory.getLogger(KafkaSchemaRegistry.class);
+
+  private final SchemaRegistryConfig config;
   final Map<Integer, SchemaKey> guidToSchemaKey;
   final Map<MD5, SchemaIdAndSubjects> schemaHashToGuid;
+  final Map<Integer, List<SchemaKey>> guidToDeletedSchemaKeys;
   private final KafkaStore<SchemaRegistryKey, SchemaRegistryValue> kafkaStore;
   private final Serializer<SchemaRegistryKey, SchemaRegistryValue> serializer;
   private final SchemaRegistryIdentity myIdentity;
   private final Object masterLock = new Object();
   private final AvroCompatibilityLevel defaultCompatibilityLevel;
-  private final String schemaRegistryZkNamespace;
-  private final String kafkaClusterZkUrl;
-  private final int zkSessionTimeoutMs;
   private final int kafkaStoreTimeoutMs;
+  private final int initTimeout;
   private final boolean isEligibleForMasterElector;
-  private String schemaRegistryZkUrl;
-  private ZkUtils zkUtils;
   private SchemaRegistryIdentity masterIdentity;
   private RestService masterRestService;
-  private ZookeeperMasterElector masterElector = null;
+  private SslFactory sslFactory;
+  private MasterElector masterElector = null;
   private Metrics metrics;
   private Sensor masterNodeSensor;
-  private boolean zkAclsEnabled;
 
   // Hand out this id during the next schema registration. Indexed from 1.
   private int nextAvailableSchemaId;
@@ -129,23 +118,25 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
   public KafkaSchemaRegistry(SchemaRegistryConfig config,
                              Serializer<SchemaRegistryKey, SchemaRegistryValue> serializer)
       throws SchemaRegistryException {
+    this.config = config;
     String host = config.getString(SchemaRegistryConfig.HOST_NAME_CONFIG);
-    int port = getPortForIdentity(config.getInt(SchemaRegistryConfig.PORT_CONFIG),
-                                  config.getList(RestConfig.LISTENERS_CONFIG));
-    this.schemaRegistryZkNamespace =
-        config.getString(SchemaRegistryConfig.SCHEMAREGISTRY_ZK_NAMESPACE);
+    SchemeAndPort schemeAndPort = getSchemeAndPortForIdentity(
+        config.getInt(SchemaRegistryConfig.PORT_CONFIG),
+        config.getList(RestConfig.LISTENERS_CONFIG),
+        config.interInstanceProtocol()
+    );
     this.isEligibleForMasterElector = config.getBoolean(SchemaRegistryConfig.MASTER_ELIGIBILITY);
-    this.myIdentity = new SchemaRegistryIdentity(host, port, isEligibleForMasterElector);
-    this.kafkaClusterZkUrl =
-        config.getString(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG);
-    this.zkSessionTimeoutMs =
-        config.getInt(SchemaRegistryConfig.KAFKASTORE_ZK_SESSION_TIMEOUT_MS_CONFIG);
+    this.myIdentity = new SchemaRegistryIdentity(host, schemeAndPort.port,
+        isEligibleForMasterElector, schemeAndPort.scheme);
+    this.sslFactory = new SslFactory(config);
     this.kafkaStoreTimeoutMs =
         config.getInt(SchemaRegistryConfig.KAFKASTORE_TIMEOUT_CONFIG);
+    this.initTimeout = config.getInt(SchemaRegistryConfig.KAFKASTORE_INIT_TIMEOUT_CONFIG);
     this.serializer = serializer;
     this.defaultCompatibilityLevel = config.compatibilityType();
     this.guidToSchemaKey = new HashMap<Integer, SchemaKey>();
     this.schemaHashToGuid = new HashMap<MD5, SchemaIdAndSubjects>();
+    this.guidToDeletedSchemaKeys = new HashMap<>();
     Store store = new InMemoryStore<SchemaRegistryKey, SchemaRegistryValue>();
     kafkaStore =
         new KafkaStore<SchemaRegistryKey, SchemaRegistryValue>(
@@ -163,29 +154,14 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     reporters.add(new JmxReporter(jmxPrefix));
     this.metrics = new Metrics(metricConfig, reporters, new SystemTime());
     this.masterNodeSensor = metrics.sensor("master-slave-role");
+
+    Map<String, String> configuredTags = config.getMap(RestConfig.METRICS_TAGS_CONFIG);
     MetricName
         m = new MetricName("master-slave-role", "master-slave-role",
                            "1.0 indicates the node is the active master in the cluster and is the"
                            + " node where all register schema and config update requests are "
-                           + "served.");
+                           + "served.", configuredTags);
     this.masterNodeSensor.add(m, new Gauge());
-    this.zkAclsEnabled = checkZkAclConfig(config);
-  }
-
-  /**
-   * Checks if the user has configured ZooKeeper ACLs or not. Throws an exception if the ZooKeeper
-   * client is set to create znodes with an ACL, yet the JAAS config is not present. Otherwise,
-   * returns whether or not the user has enabled ZooKeeper ACLs.
-   */
-  public static boolean checkZkAclConfig(SchemaRegistryConfig config) {
-    if (config.getBoolean(SchemaRegistryConfig.ZOOKEEPER_SET_ACL_CONFIG) && !JaasUtils
-        .isZkSecurityEnabled()) {
-      throw new ConfigException(
-          SchemaRegistryConfig.ZOOKEEPER_SET_ACL_CONFIG
-          + " is set to true but ZooKeeper's "
-          + "JAAS SASL configuration is not configured.");
-    }
-    return config.getBoolean(SchemaRegistryConfig.ZOOKEEPER_SET_ACL_CONFIG);
   }
 
   /**
@@ -200,14 +176,29 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
    * of say the last, is arbitrary.
    */
   // TODO: once RestConfig.PORT_CONFIG is deprecated, remove the port parameter.
-  static int getPortForIdentity(int port, List<String> configuredListeners) {
+  static SchemeAndPort getSchemeAndPortForIdentity(int port, List<String> configuredListeners,
+                                                   String requestedScheme)
+      throws SchemaRegistryException {
     List<URI> listeners = Application.parseListeners(configuredListeners, port,
-                                                     Arrays.asList("http", "https"), "http");
-    return listeners.get(0).getPort();
+                                                     Arrays.asList(
+                                                         SchemaRegistryConfig.HTTP,
+                                                         SchemaRegistryConfig.HTTPS
+                                                     ), SchemaRegistryConfig.HTTP
+    );
+    if (requestedScheme.isEmpty()) {
+      requestedScheme = SchemaRegistryConfig.HTTP;
+    }
+    for (URI listener: listeners) {
+      if (requestedScheme.equalsIgnoreCase(listener.getScheme())) {
+        return new SchemeAndPort(listener.getScheme(), listener.getPort());
+      }
+    }
+    throw new SchemaRegistryException(" No listener configured with requested scheme "
+                                      + requestedScheme);
   }
 
   @Override
-  public void init() throws SchemaRegistryInitializationException {
+  public void init() throws SchemaRegistryException {
     try {
       kafkaStore.init();
     } catch (StoreInitializationException e) {
@@ -216,39 +207,20 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     }
 
     try {
-      createZkNamespace();
-      masterElector = new ZookeeperMasterElector(zkUtils, myIdentity, this,
-                                                 isEligibleForMasterElector);
+      if (config.useKafkaCoordination()) {
+        log.info("Joining schema registry with Kafka-based coordination");
+        masterElector = new KafkaGroupMasterElector(config, myIdentity, this);
+      } else {
+        log.info("Joining schema registry with Zookeeper-based coordination");
+        masterElector = new ZookeeperMasterElector(config, myIdentity, this);
+      }
+      masterElector.init();
     } catch (SchemaRegistryStoreException e) {
       throw new SchemaRegistryInitializationException(
           "Error electing master while initializing schema registry", e);
     } catch (SchemaRegistryTimeoutException e) {
       throw new SchemaRegistryInitializationException(e);
     }
-  }
-
-  private void createZkNamespace() {
-    int kafkaNamespaceIndex = kafkaClusterZkUrl.indexOf("/");
-    String zkConnForNamespaceCreation = kafkaNamespaceIndex > 0
-                                        ? kafkaClusterZkUrl.substring(0, kafkaNamespaceIndex)
-                                        : kafkaClusterZkUrl;
-
-    String schemaRegistryNamespace = "/" + schemaRegistryZkNamespace;
-    schemaRegistryZkUrl = zkConnForNamespaceCreation + schemaRegistryNamespace;
-
-    ZkUtils zkUtilsForNamespaceCreation = ZkUtils.apply(
-        zkConnForNamespaceCreation,
-        zkSessionTimeoutMs, zkSessionTimeoutMs, zkAclsEnabled);
-    // create the zookeeper namespace using cluster.name if it doesn't already exist
-    zkUtilsForNamespaceCreation.makeSurePersistentPathExists(
-        schemaRegistryNamespace,
-        zkUtilsForNamespaceCreation.defaultAcls(schemaRegistryNamespace));
-    log.info("Created schema registry namespace "
-             + zkConnForNamespaceCreation
-             + schemaRegistryNamespace);
-    zkUtilsForNamespaceCreation.close();
-    this.zkUtils = ZkUtils.apply(
-        schemaRegistryZkUrl, zkSessionTimeoutMs, zkSessionTimeoutMs, zkAclsEnabled);
   }
 
   public boolean isMaster() {
@@ -268,6 +240,7 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
    *
    * @param newMaster Identity of the current master. null means no master is alive.
    */
+  @Override
   public void setMaster(@Nullable SchemaRegistryIdentity newMaster)
       throws SchemaRegistryTimeoutException, SchemaRegistryStoreException {
     log.debug("Setting the master to " + newMaster);
@@ -285,18 +258,27 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
       if (masterIdentity == null) {
         masterRestService = null;
       } else {
-        masterRestService = new RestService(String.format("http://%s:%d",
-                                                          masterIdentity.getHost(),
-                                                          masterIdentity.getPort()));
+        masterRestService = new RestService(masterIdentity.getUrl());
+        if (sslFactory != null && sslFactory.sslContext() != null) {
+          masterRestService.setSslSocketFactory(sslFactory.sslContext().getSocketFactory());
+        }
       }
 
       if (masterIdentity != null && !masterIdentity.equals(previousMaster) && isMaster()) {
-        nextAvailableSchemaId = nextSchemaIdCounterBatch();
-        idBatchInclusiveUpperBound = getInclusiveUpperBound(nextAvailableSchemaId);
-
         // The new master may not know the exact last offset in the Kafka log. So, mark the
-        // last offset invalid here and let the logic in register() deal with it later.
+        // last offset invalid here
         kafkaStore.markLastWrittenOffsetInvalid();
+        //ensure the new master catches up with the offsets before it gets nextid and assigns
+        // master
+        try {
+          kafkaStore.waitUntilKafkaReaderReachesLastOffset(initTimeout);
+        } catch (StoreException e) {
+          throw new SchemaRegistryStoreException("Exception getting latest offset ", e);
+        }
+        SchemaIdRange nextRange = masterElector.nextRange();
+        nextAvailableSchemaId = nextRange.base();
+        idBatchInclusiveUpperBound = nextRange.end();
+
       }
 
       masterNodeSensor.record(isMaster() ? 1.0 : 0.0);
@@ -372,7 +354,8 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
           nextAvailableSchemaId++;
         }
         if (reachedEndOfIdBatch()) {
-          idBatchInclusiveUpperBound = getInclusiveUpperBound(nextSchemaIdCounterBatch());
+          SchemaIdRange nextRange = masterElector.nextRange();
+          idBatchInclusiveUpperBound = nextRange.end();
         }
 
         SchemaValue schemaValue = new SchemaValue(schema);
@@ -436,9 +419,9 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
   }
 
 
-  public void deleteSchemaVersionOrForward(String subject,
-                                           Schema schema)
-      throws SchemaRegistryException {
+  public void deleteSchemaVersionOrForward(
+      Map<String, String> headerProperties, String subject,
+      Schema schema) throws SchemaRegistryException {
 
     synchronized (masterLock) {
       if (isMaster()) {
@@ -446,7 +429,7 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
       } else {
         // forward registering request to the master
         if (masterIdentity != null) {
-          forwardDeleteSchemaVersionRequestToMaster(subject, schema.getVersion());
+          forwardDeleteSchemaVersionRequestToMaster(headerProperties, subject, schema.getVersion());
         } else {
           throw new UnknownMasterException("Register schema request failed since master is "
                                            + "unknown");
@@ -483,14 +466,16 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     }
   }
 
-  public List<Integer> deleteSubjectOrForward(String subject) throws SchemaRegistryException {
+  public List<Integer> deleteSubjectOrForward(
+      Map<String, String> requestProperties,
+      String subject) throws SchemaRegistryException {
     synchronized (masterLock) {
       if (isMaster()) {
         return deleteSubject(subject);
       } else {
         // forward registering request to the master
         if (masterIdentity != null) {
-          return forwardDeleteSubjectRequestToMaster(subject);
+          return forwardDeleteSubjectRequestToMaster(requestProperties, subject);
         } else {
           throw new UnknownMasterException("Register schema request failed since master is "
                                            + "unknown");
@@ -528,105 +513,6 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
       // this schema was never registered in the registry under any subject
       return null;
     }
-  }
-
-  /**
-   * Allocate and lock the next batch of schema ids. Signal a global lock over the next batch by
-   * writing the inclusive upper bound of the batch to ZooKeeper. I.e. the value stored in
-   * ZOOKEEPER_SCHEMA_ID_COUNTER in ZooKeeper indicates the current max allocated id for assignment.
-   *
-   * <p>When a schema registry server is initialized, kafka may have preexisting persistent
-   * schema -> id assignments, and zookeeper may have preexisting counter data.
-   * Therefore, when allocating the next batch of ids, it's necessary to ensure the entire new batch
-   * is greater than the greatest id in kafka and also greater than the previously recorded batch
-   * in zookeeper.
-   *
-   * <p>Return the first available id in the newly allocated batch of ids.
-   */
-  private Integer nextSchemaIdCounterBatch() throws SchemaRegistryStoreException {
-    int nextIdBatchLowerBound = 1;
-
-    while (true) {
-
-      if (!zkUtils.zkClient().exists(ZOOKEEPER_SCHEMA_ID_COUNTER)) {
-        // create ZOOKEEPER_SCHEMA_ID_COUNTER if it already doesn't exist
-
-        try {
-          nextIdBatchLowerBound = getNextBatchLowerBoundFromKafkaStore();
-          int nextIdBatchUpperBound = getInclusiveUpperBound(nextIdBatchLowerBound);
-          zkUtils.createPersistentPath(ZOOKEEPER_SCHEMA_ID_COUNTER,
-                                       String.valueOf(nextIdBatchUpperBound),
-                                       zkUtils.defaultAcls(ZOOKEEPER_SCHEMA_ID_COUNTER));
-          return nextIdBatchLowerBound;
-        } catch (ZkNodeExistsException ignore) {
-          // A zombie master may have created this zk node after the initial existence check
-          // Ignore and try again
-        }
-      } else { // ZOOKEEPER_SCHEMA_ID_COUNTER exists
-
-        // read the latest counter value
-        final Tuple2<String, Stat> counterValue = zkUtils.readData(ZOOKEEPER_SCHEMA_ID_COUNTER);
-        final String counterData = counterValue._1();
-        final Stat counterStat = counterValue._2();
-        if (counterData == null) {
-          throw new SchemaRegistryStoreException(
-              "Failed to read schema id counter " + ZOOKEEPER_SCHEMA_ID_COUNTER
-              + " from zookeeper");
-        }
-
-        // Compute the lower bound of next id batch based on zk data and kafkastore data
-        int zkIdCounterValue = Integer.valueOf(counterData);
-        int zkNextIdBatchLowerBound = zkIdCounterValue + 1;
-        if (zkIdCounterValue % ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE != 0) {
-          // ZooKeeper id counter should be an integer multiple of id batch size in normal
-          // operation; handle corrupted/stale id counter data gracefully by bumping
-          // up to the next id batch
-
-          // fixedZkIdCounterValue is the smallest multiple of
-          // ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE greater than the bad zkIdCounterValue
-          int fixedZkIdCounterValue = ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE
-                                      * (1
-                                         + zkIdCounterValue
-                                           / ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE);
-          zkNextIdBatchLowerBound = fixedZkIdCounterValue + 1;
-
-          log.warn(
-              "Zookeeper schema id counter is not an integer multiple of id batch size."
-              + " Zookeeper may have stale id counter data.\n"
-              + "zk id counter: " + zkIdCounterValue + "\n"
-              + "id batch size: " + ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE);
-        }
-        nextIdBatchLowerBound =
-            Math.max(zkNextIdBatchLowerBound, getNextBatchLowerBoundFromKafkaStore());
-        String
-            nextIdBatchUpperBound =
-            String.valueOf(getInclusiveUpperBound(nextIdBatchLowerBound));
-
-        // conditionally update the zookeeper path with the upper bound of the new id batch.
-        // newSchemaIdCounterDataVersion < 0 indicates a failed conditional update.
-        // Most probable cause is the existence of another master which tries to do the same
-        // counter batch allocation at the same time. If this happens, re-read the value and
-        // continue until one master is determined to be the zombie master.
-        // NOTE: The handling of multiple masters is still a TODO
-        int newSchemaIdCounterDataVersion =
-            (Integer) zkUtils.conditionalUpdatePersistentPath(
-                ZOOKEEPER_SCHEMA_ID_COUNTER,
-                nextIdBatchUpperBound,
-                counterStat.getVersion(),
-                null)._2();
-        if (newSchemaIdCounterDataVersion >= 0) {
-          break;
-        }
-      }
-      try {
-        // Wait a bit and attempt id batch allocation again
-        Thread.sleep(ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_WRITE_RETRY_BACKOFF_MS);
-      } catch (InterruptedException ignored) {
-        // ignored
-      }
-    }
-
-    return nextIdBatchLowerBound;
   }
 
   private int forwardRegisterRequestToMaster(String subject, String schemaString,
@@ -673,14 +559,16 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     }
   }
 
-  private void forwardDeleteSchemaVersionRequestToMaster(String subject, Integer version)
-      throws SchemaRegistryRequestForwardingException {
+  private void forwardDeleteSchemaVersionRequestToMaster(
+      Map<String, String> headerProperties,
+      String subject,
+      Integer version) throws SchemaRegistryRequestForwardingException {
     UrlList baseUrl = masterRestService.getBaseUrls();
 
     log.debug(String.format("Forwarding deleteSchemaVersion schema version request %s-%s to %s",
                             subject, version, baseUrl));
     try {
-      masterRestService.deleteSchemaVersion(subject, String.valueOf(version));
+      masterRestService.deleteSchemaVersion(headerProperties, subject, String.valueOf(version));
     } catch (IOException e) {
       throw new SchemaRegistryRequestForwardingException(
           String.format(
@@ -691,14 +579,15 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     }
   }
 
-  private List<Integer> forwardDeleteSubjectRequestToMaster(String subject)
-      throws SchemaRegistryRequestForwardingException {
+  private List<Integer> forwardDeleteSubjectRequestToMaster(
+      Map<String, String> requestProperties,
+      String subject) throws SchemaRegistryRequestForwardingException {
     UrlList baseUrl = masterRestService.getBaseUrls();
 
     log.debug(String.format("Forwarding delete subject request for  %s to %s",
                             subject, baseUrl));
     try {
-      return masterRestService.deleteSubject(subject);
+      return masterRestService.deleteSubject(requestProperties, subject);
     } catch (IOException e) {
       throw new SchemaRegistryRequestForwardingException(
           String.format(
@@ -841,9 +730,6 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     if (masterElector != null) {
       masterElector.close();
     }
-    if (zkUtils != null) {
-      zkUtils.close();
-    }
   }
 
   public void updateCompatibilityLevel(String subject, AvroCompatibilityLevel newCompatibilityLevel)
@@ -946,9 +832,7 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     this.kafkaStore.delete(configKey);
   }
 
-  /**
-   * For testing.
-   */
+
   KafkaStore<SchemaRegistryKey, SchemaRegistryValue> getKafkaStore() {
     return this.kafkaStore;
   }
@@ -986,7 +870,7 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     }
   }
 
-  int getMaxIdInKafkaStore() {
+  public int getMaxIdInKafkaStore() {
     return this.maxIdInKafkaStore;
   }
 
@@ -1004,25 +888,13 @@ public class KafkaSchemaRegistry implements SchemaRegistry {
     return nextAvailableSchemaId > idBatchInclusiveUpperBound;
   }
 
-  /**
-   * Return a minimum lower bound on the next batch of ids based on ids currently in the
-   * kafka store.
-   */
-  private int getNextBatchLowerBoundFromKafkaStore() {
-    if (this.getMaxIdInKafkaStore() <= 0) {
-      return 1;
+  public static class SchemeAndPort {
+    public int port;
+    public String scheme;
+
+    public SchemeAndPort(String scheme, int port) {
+      this.port = port;
+      this.scheme = scheme;
     }
-
-    int
-        nextBatchLowerBound =
-        1 + this.getMaxIdInKafkaStore() / ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE;
-    return 1 + nextBatchLowerBound * ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE;
-  }
-
-  /**
-   * E.g. if inclusiveLowerBound is 61, and BATCH_SIZE is 20, the inclusiveUpperBound should be 80.
-   */
-  private int getInclusiveUpperBound(int inclusiveLowerBound) {
-    return inclusiveLowerBound + ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE - 1;
   }
 }

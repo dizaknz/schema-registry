@@ -23,13 +23,18 @@ import org.apache.avro.util.Utf8;
 import org.apache.kafka.common.errors.SerializationException;
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 
+import avro.shaded.com.google.common.collect.ImmutableMap;
 import io.confluent.kafka.example.ExtendedUser;
 import io.confluent.kafka.example.User;
 import io.confluent.kafka.schemaregistry.client.MockSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
+import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
+import io.confluent.kafka.serializers.subject.TopicRecordNameStrategy;
 import kafka.utils.VerifiableProperties;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -43,7 +48,6 @@ public class KafkaAvroSerializerTest {
 
   private final SchemaRegistryClient schemaRegistry;
   private final KafkaAvroSerializer avroSerializer;
-  private final KafkaAvroEncoder avroEncoder;
   private final KafkaAvroDeserializer avroDeserializer;
   private final KafkaAvroDecoder avroDecoder;
   private final String topic;
@@ -51,11 +55,12 @@ public class KafkaAvroSerializerTest {
   private final KafkaAvroDecoder specificAvroDecoder;
 
   public KafkaAvroSerializerTest() {
+    Properties defaultConfig = new Properties();
+    defaultConfig.put(KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, "bogus");
     schemaRegistry = new MockSchemaRegistryClient();
-    avroSerializer = new KafkaAvroSerializer(schemaRegistry);
-    avroEncoder = new KafkaAvroEncoder(schemaRegistry);
+    avroSerializer = new KafkaAvroSerializer(schemaRegistry, new HashMap(defaultConfig));
     avroDeserializer = new KafkaAvroDeserializer(schemaRegistry);
-    avroDecoder = new KafkaAvroDecoder(schemaRegistry);
+    avroDecoder = new KafkaAvroDecoder(schemaRegistry, new VerifiableProperties(defaultConfig));
     topic = "test";
 
     HashMap<String, String> specificDeserializerProps = new HashMap<String, String>();
@@ -72,6 +77,7 @@ public class KafkaAvroSerializerTest {
         KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, "true");
     specificAvroDecoder = new KafkaAvroDecoder(
         schemaRegistry, new VerifiableProperties(specificDecoderProps));
+
   }
 
   private IndexedRecord createAvroRecord() {
@@ -82,6 +88,17 @@ public class KafkaAvroSerializerTest {
     Schema schema = parser.parse(userSchema);
     GenericRecord avroRecord = new GenericData.Record(schema);
     avroRecord.put("name", "testUser");
+    return avroRecord;
+  }
+
+  private IndexedRecord createAccountRecord() {
+    String accountSchema = "{\"namespace\": \"example.avro\", \"type\": \"record\", " +
+                           "\"name\": \"Account\"," +
+                           "\"fields\": [{\"name\": \"accountNumber\", \"type\": \"string\"}]}";
+    Schema.Parser parser = new Schema.Parser();
+    Schema schema = parser.parse(accountSchema);
+    GenericRecord avroRecord = new GenericData.Record(schema);
+    avroRecord.put("accountNumber", "0123456789");
     return avroRecord;
   }
 
@@ -147,12 +164,72 @@ public class KafkaAvroSerializerTest {
     assertEquals("abc", avroDecoder.fromBytes(bytes));
 
     bytes = avroSerializer.serialize(topic, "abc".getBytes());
-    assertArrayEquals("abc".getBytes(), (byte[])avroDeserializer.deserialize(topic, bytes));
-    assertArrayEquals("abc".getBytes(), (byte[])avroDecoder.fromBytes(bytes));
+    assertArrayEquals("abc".getBytes(), (byte[]) avroDeserializer.deserialize(topic, bytes));
+    assertArrayEquals("abc".getBytes(), (byte[]) avroDecoder.fromBytes(bytes));
 
     bytes = avroSerializer.serialize(topic, new Utf8("abc"));
     assertEquals("abc", avroDeserializer.deserialize(topic, bytes));
     assertEquals("abc", avroDecoder.fromBytes(bytes));
+  }
+
+  @Test(expected = SerializationException.class)
+  public void testKafkaAvroSerializerWithoutAutoRegister() {
+    Map configs = ImmutableMap.of(
+        KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG,
+        "bogus",
+        KafkaAvroSerializerConfig.AUTO_REGISTER_SCHEMAS,
+        false
+    );
+    avroSerializer.configure(configs, false);
+    IndexedRecord avroRecord = createAvroRecord();
+    avroSerializer.serialize(topic, avroRecord);
+  }
+
+  @Test
+  public void testKafkaAvroSerializerWithPreRegistered() throws IOException, RestClientException {
+    Map configs = ImmutableMap.of(
+        KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG,
+        "bogus",
+        KafkaAvroSerializerConfig.AUTO_REGISTER_SCHEMAS,
+        false
+    );
+    avroSerializer.configure(configs, false);
+    IndexedRecord avroRecord = createAvroRecord();
+    schemaRegistry.register(topic + "-value", avroRecord.getSchema());
+    byte[] bytes = avroSerializer.serialize(topic, avroRecord);
+    assertEquals(avroRecord, avroDeserializer.deserialize(topic, bytes));
+    assertEquals(avroRecord, avroDecoder.fromBytes(bytes));
+  }
+
+  @Test
+  public void testKafkaAvroSerializerWithMultiType() throws IOException, RestClientException {
+    Map configs = ImmutableMap.of(
+        KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG,
+        "bogus",
+        KafkaAvroSerializerConfig.VALUE_SUBJECT_NAME_STRATEGY,
+        TopicRecordNameStrategy.class.getName()
+    );
+    avroSerializer.configure(configs, false);
+    IndexedRecord record1 = createAvroRecord();
+    IndexedRecord record2 = createAccountRecord();
+    byte[] bytes1 = avroSerializer.serialize(topic, record1);
+    byte[] bytes2 = avroSerializer.serialize(topic, record2);
+    assertNotNull(schemaRegistry.getLatestSchemaMetadata(topic + "-example.avro.User"));
+    assertNotNull(schemaRegistry.getLatestSchemaMetadata(topic + "-example.avro.Account"));
+    assertEquals(record1, avroDeserializer.deserialize(topic, bytes1));
+    assertEquals(record2, avroDeserializer.deserialize(topic, bytes2));
+  }
+
+  @Test(expected = SerializationException.class)
+  public void testKafkaAvroSerializerWithMultiTypeError() {
+    Map configs = ImmutableMap.of(
+        KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG,
+        "bogus",
+        KafkaAvroSerializerConfig.VALUE_SUBJECT_NAME_STRATEGY,
+        TopicRecordNameStrategy.class.getName()
+    );
+    avroSerializer.configure(configs, false);
+    avroSerializer.serialize(topic, "a string should not be allowed");
   }
 
   @Test
@@ -164,19 +241,28 @@ public class KafkaAvroSerializerTest {
 
     obj = avroDecoder.fromBytes(bytes);
     GenericData.Record extendedUser = (GenericData.Record) obj;
-    assertTrue("Returned object should be a GenericData Record", GenericData.Record.class.isInstance(obj));
+    assertTrue(
+        "Returned object should be a GenericData Record",
+        GenericData.Record.class.isInstance(obj)
+    );
     //Age field is visible
     assertNotNull(extendedUser.get("age"));
 
     obj = avroDecoder.fromBytes(bytes, User.getClassSchema());
-    assertTrue("Returned object should be a GenericData Record", GenericData.Record.class.isInstance(obj));
+    assertTrue(
+        "Returned object should be a GenericData Record",
+        GenericData.Record.class.isInstance(obj)
+    );
     GenericData.Record decoderProjection = (GenericData.Record) obj;
     assertEquals("testUser", decoderProjection.get("name").toString());
     //Age field was hidden by projection
     assertNull(decoderProjection.get("age"));
 
     obj = avroDeserializer.deserialize(topic, bytes, User.getClassSchema());
-    assertTrue("Returned object should be a GenericData Record", GenericData.Record.class.isInstance(obj));
+    assertTrue(
+        "Returned object should be a GenericData Record",
+        GenericData.Record.class.isInstance(obj)
+    );
     GenericData.Record deserializeProjection = (GenericData.Record) obj;
     assertEquals("testUser", deserializeProjection.get("name").toString());
     //Age field was hidden by projection
@@ -192,14 +278,23 @@ public class KafkaAvroSerializerTest {
     bytes = avroSerializer.serialize(topic, avroRecord);
 
     obj = avroDecoder.fromBytes(bytes);
-    assertTrue("Returned object should be a GenericData Record", GenericData.Record.class.isInstance(obj));
+    assertTrue(
+        "Returned object should be a GenericData Record",
+        GenericData.Record.class.isInstance(obj)
+    );
 
     obj = specificAvroDecoder.fromBytes(bytes);
-    assertTrue("Returned object should be a io.confluent.kafka.example.User", User.class.isInstance(obj));
+    assertTrue(
+        "Returned object should be a io.confluent.kafka.example.User",
+        User.class.isInstance(obj)
+    );
     assertEquals(avroRecord, obj);
 
     obj = specificAvroDeserializer.deserialize(topic, bytes);
-    assertTrue("Returned object should be a io.confluent.kafka.example.User", User.class.isInstance(obj));
+    assertTrue(
+        "Returned object should be a io.confluent.kafka.example.User",
+        User.class.isInstance(obj)
+    );
     assertEquals(avroRecord, obj);
   }
 
@@ -212,20 +307,32 @@ public class KafkaAvroSerializerTest {
     bytes = avroSerializer.serialize(topic, avroRecord);
 
     obj = specificAvroDecoder.fromBytes(bytes);
-    assertTrue("Full object should be a io.confluent.kafka.example.ExtendedUser", ExtendedUser.class.isInstance(obj));
+    assertTrue(
+        "Full object should be a io.confluent.kafka.example.ExtendedUser",
+        ExtendedUser.class.isInstance(obj)
+    );
     assertEquals(avroRecord, obj);
 
     obj = specificAvroDecoder.fromBytes(bytes, User.getClassSchema());
-    assertTrue("Projection object should be a io.confluent.kafka.example.User", User.class.isInstance(obj));
-    assertEquals("testUser", ((User)obj).getName().toString());
+    assertTrue(
+        "Projection object should be a io.confluent.kafka.example.User",
+        User.class.isInstance(obj)
+    );
+    assertEquals("testUser", ((User) obj).getName().toString());
 
     obj = specificAvroDeserializer.deserialize(topic, bytes);
-    assertTrue("Full object should be a io.confluent.kafka.example.ExtendedUser", ExtendedUser.class.isInstance(obj));
+    assertTrue(
+        "Full object should be a io.confluent.kafka.example.ExtendedUser",
+        ExtendedUser.class.isInstance(obj)
+    );
     assertEquals(avroRecord, obj);
 
     obj = specificAvroDeserializer.deserialize(topic, bytes, User.getClassSchema());
-    assertTrue("Projection object should be a io.confluent.kafka.example.User", User.class.isInstance(obj));
-    assertEquals("testUser", ((User)obj).getName().toString());
+    assertTrue(
+        "Projection object should be a io.confluent.kafka.example.User",
+        User.class.isInstance(obj)
+    );
+    assertEquals("testUser", ((User) obj).getName().toString());
   }
 
   @Test
@@ -266,17 +373,7 @@ public class KafkaAvroSerializerTest {
   }
 
   @Test
-  public void testKafkaAvroEncoder() {
-    byte[] bytes;
-    Object obj;
-    IndexedRecord avroRecord = createAvroRecord();
-    bytes = avroEncoder.toBytes(avroRecord);
-    obj = avroDecoder.fromBytes(bytes);
-    assertEquals(avroRecord, obj);
-  }
-
-  @Test
-  public void testInvalidInput() {
+  public void testAvroSerializerInvalidInput() {
     IndexedRecord invalidRecord = createInvalidAvroRecord();
     try {
       avroSerializer.serialize(topic, invalidRecord);
@@ -284,24 +381,10 @@ public class KafkaAvroSerializerTest {
     } catch (SerializationException e) {
       // this is expected
     }
-
-    try {
-      avroEncoder.toBytes(invalidRecord);
-      fail("Sending invalid record should fail encoder");
-    } catch (SerializationException e) {
-      // this is expected
-    }
-
-    try {
-      avroEncoder.toBytes("abc");
-      fail("Sending data of unsupported type should fail encoder");
-    } catch (SerializationException e) {
-      // this is expected
-    }
   }
 
   @Test
-  public void test_schemas_per_subject(){
+  public void test_schemas_per_subject() {
     HashMap<String, String> props = new HashMap<>();
     props.put(KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, "bogus");
     props.put(KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, "true");

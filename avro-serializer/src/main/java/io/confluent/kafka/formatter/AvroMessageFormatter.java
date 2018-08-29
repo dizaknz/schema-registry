@@ -16,6 +16,7 @@
 
 package io.confluent.kafka.formatter;
 
+import io.confluent.kafka.serializers.AvroSchemaUtils;
 import org.apache.avro.AvroRuntimeException;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumWriter;
@@ -25,10 +26,14 @@ import org.apache.avro.io.JsonEncoder;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.serialization.Deserializer;
 
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Properties;
 
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
@@ -59,9 +64,11 @@ public class AvroMessageFormatter extends AbstractKafkaAvroDeserializer
     implements MessageFormatter {
 
   private final EncoderFactory encoderFactory = EncoderFactory.get();
+  private static final byte[] NULL_BYTES = "null".getBytes(StandardCharsets.UTF_8);
   private boolean printKey = false;
-  private byte[] keySeparator = "\t".getBytes();
-  private byte[] lineSeparator = "\n".getBytes();
+  private byte[] keySeparator = "\t".getBytes(StandardCharsets.UTF_8);
+  private byte[] lineSeparator = "\n".getBytes(StandardCharsets.UTF_8);
+  private Deserializer keyDeserializer;
 
   /**
    * Constructor needed by kafka console consumer.
@@ -72,9 +79,14 @@ public class AvroMessageFormatter extends AbstractKafkaAvroDeserializer
   /**
    * For testing only.
    */
-  AvroMessageFormatter(SchemaRegistryClient schemaRegistryClient, boolean printKey) {
+  AvroMessageFormatter(
+      SchemaRegistryClient schemaRegistryClient,
+      boolean printKey,
+      Deserializer keyDeserializer
+  ) {
     this.schemaRegistry = schemaRegistryClient;
     this.printKey = printKey;
+    this.keyDeserializer = keyDeserializer;
   }
 
   @Override
@@ -86,25 +98,52 @@ public class AvroMessageFormatter extends AbstractKafkaAvroDeserializer
     if (url == null) {
       throw new ConfigException("Missing schema registry url!");
     }
+
+    Map<String, Object> originals = getPropertiesMap(props);
     schemaRegistry = new CachedSchemaRegistryClient(
-        url, AbstractKafkaAvroSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_DEFAULT);
+        url, AbstractKafkaAvroSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_DEFAULT, originals);
 
     if (props.containsKey("print.key")) {
       printKey = props.getProperty("print.key").trim().toLowerCase().equals("true");
     }
     if (props.containsKey("key.separator")) {
-      keySeparator = props.getProperty("key.separator").getBytes();
+      keySeparator = props.getProperty("key.separator").getBytes(StandardCharsets.UTF_8);
     }
     if (props.containsKey("line.separator")) {
-      lineSeparator = props.getProperty("line.separator").getBytes();
+      lineSeparator = props.getProperty("line.separator").getBytes(StandardCharsets.UTF_8);
     }
+    if (props.containsKey("key.deserializer")) {
+      try {
+        keyDeserializer =
+            (Deserializer)Class.forName((String) props.get("key.deserializer")).newInstance();
+      } catch (Exception e) {
+        throw new ConfigException("Error initializing Key deserializer", e);
+      }
+    }
+  }
+
+  private Map<String, Object> getPropertiesMap(Properties props) {
+    Map<String,Object> originals = new HashMap<>();
+    for (final String name: props.stringPropertyNames()) {
+      originals.put(name, props.getProperty(name));
+    }
+    return originals;
   }
 
   @Override
   public void writeTo(ConsumerRecord<byte[], byte[]> consumerRecord, PrintStream output) {
     if (printKey) {
       try {
-        writeTo(consumerRecord.key(), output);
+        if (keyDeserializer != null) {
+          Object deserializedKey = consumerRecord.key() == null
+                                   ? null
+                                   : keyDeserializer.deserialize(null, consumerRecord.key());
+          output.write(
+              deserializedKey != null ? deserializedKey.toString().getBytes(StandardCharsets.UTF_8)
+                                      : NULL_BYTES);
+        } else {
+          writeTo(consumerRecord.key(), output);
+        }
         output.write(keySeparator);
       } catch (IOException ioe) {
         throw new SerializationException("Error while formatting the key", ioe);
@@ -120,7 +159,7 @@ public class AvroMessageFormatter extends AbstractKafkaAvroDeserializer
 
   private void writeTo(byte[] data, PrintStream output) throws IOException {
     Object object = deserialize(data);
-    Schema schema = getSchema(object);
+    Schema schema = AvroSchemaUtils.getSchema(object);
 
     try {
       JsonEncoder encoder = encoderFactory.jsonEncoder(schema, output);

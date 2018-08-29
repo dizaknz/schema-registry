@@ -16,6 +16,10 @@
 
 package io.confluent.connect.avro;
 
+import com.connect.avro.EnumUnion;
+import com.connect.avro.UserType;
+
+import org.apache.avro.generic.GenericContainer;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.GenericRecordBuilder;
@@ -34,6 +38,7 @@ import org.codehaus.jackson.node.IntNode;
 import org.codehaus.jackson.node.JsonNodeFactory;
 import org.codehaus.jackson.node.ObjectNode;
 import org.hamcrest.core.IsEqual;
+import org.junit.Assert;
 import org.junit.Test;
 import org.powermock.reflect.Whitebox;
 
@@ -47,12 +52,17 @@ import java.util.Collections;
 import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.TimeZone;
 
+import avro.shaded.com.google.common.collect.ImmutableMap;
+import foo.bar.EnumTest;
+import foo.bar.Kind;
 import io.confluent.kafka.serializers.NonRecordContainer;
 
 import static io.confluent.connect.avro.AvroData.AVRO_TYPE_ENUM;
 import static io.confluent.connect.avro.AvroData.CONNECT_ENUM_DOC_PROP;
+import static io.confluent.connect.avro.AvroData.CONNECT_RECORD_DOC_PROP;
 import static org.junit.Assert.*;
 
 public class AvroDataTest {
@@ -83,7 +93,7 @@ public class AvroDataTest {
   @Test
   public void testFromConnectBoolean() {
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder().booleanType();
-    checkNonRecordConversion(avroSchema, true, Schema.BOOLEAN_SCHEMA, true);
+    checkNonRecordConversion(avroSchema, true, Schema.BOOLEAN_SCHEMA, true, avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_BOOLEAN_SCHEMA);
   }
@@ -92,7 +102,7 @@ public class AvroDataTest {
   public void testFromConnectByte() {
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder().intType();
     avroSchema.addProp("connect.type", "int8");
-    checkNonRecordConversion(avroSchema, 12, Schema.INT8_SCHEMA, (byte) 12);
+    checkNonRecordConversion(avroSchema, 12, Schema.INT8_SCHEMA, (byte) 12, avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_INT8_SCHEMA);
   }
@@ -101,7 +111,7 @@ public class AvroDataTest {
   public void testFromConnectShort() {
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder().intType();
     avroSchema.addProp("connect.type", "int16");
-    checkNonRecordConversion(avroSchema, 12, Schema.INT16_SCHEMA, (short) 12);
+    checkNonRecordConversion(avroSchema, 12, Schema.INT16_SCHEMA, (short) 12, avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_INT16_SCHEMA);
   }
@@ -109,7 +119,7 @@ public class AvroDataTest {
   @Test
   public void testFromConnectInteger() {
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder().intType();
-    checkNonRecordConversion(avroSchema, 12, Schema.INT32_SCHEMA, 12);
+    checkNonRecordConversion(avroSchema, 12, Schema.INT32_SCHEMA, 12, avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_INT32_SCHEMA);
   }
@@ -117,7 +127,7 @@ public class AvroDataTest {
   @Test
   public void testFromConnectLong() {
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder().longType();
-    checkNonRecordConversion(avroSchema, 12L, Schema.INT64_SCHEMA, 12L);
+    checkNonRecordConversion(avroSchema, 12L, Schema.INT64_SCHEMA, 12L, avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_INT64_SCHEMA);
   }
@@ -125,7 +135,7 @@ public class AvroDataTest {
   @Test
   public void testFromConnectFloat() {
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder().floatType();
-    checkNonRecordConversion(avroSchema, 12.2f, Schema.FLOAT32_SCHEMA, 12.2f);
+    checkNonRecordConversion(avroSchema, 12.2f, Schema.FLOAT32_SCHEMA, 12.2f, avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_FLOAT32_SCHEMA);
   }
@@ -133,7 +143,7 @@ public class AvroDataTest {
   @Test
   public void testFromConnectDouble() {
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder().doubleType();
-    checkNonRecordConversion(avroSchema, 12.2, Schema.FLOAT64_SCHEMA, 12.2);
+    checkNonRecordConversion(avroSchema, 12.2, Schema.FLOAT64_SCHEMA, 12.2, avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_FLOAT64_SCHEMA);
   }
@@ -142,7 +152,7 @@ public class AvroDataTest {
   public void testFromConnectBytes() {
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder().bytesType();
     checkNonRecordConversion(avroSchema, ByteBuffer.wrap("foo".getBytes()),
-                             Schema.BYTES_SCHEMA, "foo".getBytes());
+                             Schema.BYTES_SCHEMA, "foo".getBytes(), avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_BYTES_SCHEMA);
   }
@@ -151,9 +161,32 @@ public class AvroDataTest {
   public void testFromConnectString() {
     org.apache.avro.Schema avroSchema =
         org.apache.avro.SchemaBuilder.builder().stringType();
-    checkNonRecordConversion(avroSchema, "string", Schema.STRING_SCHEMA, "string");
+    checkNonRecordConversion(avroSchema, "string", Schema.STRING_SCHEMA, "string", avroData);
 
     checkNonRecordConversionNull(Schema.OPTIONAL_STRING_SCHEMA);
+  }
+
+  @Test
+  public void testFromConnectEnum() {
+    AvroDataConfig avroDataConfig = new AvroDataConfig.Builder()
+        .with(AvroDataConfig.ENHANCED_AVRO_SCHEMA_SUPPORT_CONFIG, true)
+        .build();
+    AvroData avroData = new AvroData(avroDataConfig);
+
+    org.apache.avro.Schema avroSchema =
+        org.apache.avro.SchemaBuilder.builder().enumeration("enum").symbols("one","two","three");
+    GenericData.EnumSymbol avroObj = new GenericData.EnumSymbol(avroSchema, "one");
+
+    Map connectPropsMap = ImmutableMap.of("connect.enum.doc","null",
+        "io.confluent.connect.avro.Enum","enum",
+        "io.confluent.connect.avro.Enum.one", "one",
+        "io.confluent.connect.avro.Enum.two","two",
+        "io.confluent.connect.avro.Enum.three","three");
+    avroSchema.addProp("connect.parameters", connectPropsMap);
+    avroSchema.addProp("connect.name", "enum");
+    SchemaAndValue schemaAndValue = avroData.toConnectData(avroSchema, avroObj);
+    checkNonRecordConversion(avroSchema, avroObj, schemaAndValue.schema(), schemaAndValue.value(),
+        avroData);
   }
 
   @Test
@@ -378,7 +411,7 @@ public class AvroDataTest {
             .nullType().endUnion();
 
     NonRecordContainer converted = checkNonRecordConversion(avroSchema, "string",
-                                                            schema, "string");
+                                                            schema, "string", avroData);
     assertNotEquals(wrongAvroSchema, converted.getSchema());
 
     // Validate null is correctly translated to null again
@@ -434,8 +467,7 @@ public class AvroDataTest {
   @Test
   public void testFromConnectLogicalDecimal() {
     org.apache.avro.Schema avroSchema = createDecimalSchema(true, 64);
-    NonRecordContainer container = checkNonRecordConversion(avroSchema, ByteBuffer.wrap(TEST_DECIMAL_BYTES),
-                             Decimal.builder(2).parameter(AvroData.CONNECT_AVRO_DECIMAL_PRECISION_PROP, "64").build(), TEST_DECIMAL);
+    checkNonRecordConversion(avroSchema, ByteBuffer.wrap(TEST_DECIMAL_BYTES), Decimal.builder(2).parameter(AvroData.CONNECT_AVRO_DECIMAL_PRECISION_PROP, "64").build(), TEST_DECIMAL, avroData);
     checkNonRecordConversionNull(Decimal.builder(2).optional().build());
   }
 
@@ -446,7 +478,7 @@ public class AvroDataTest {
     avroSchema.addProp("connect.version", JsonNodeFactory.instance.numberNode(1));
     avroSchema.addProp(AvroData.AVRO_LOGICAL_TYPE_PROP, AvroData.AVRO_LOGICAL_DATE);
     checkNonRecordConversion(avroSchema, 10000, Date.SCHEMA,
-                             EPOCH_PLUS_TEN_THOUSAND_DAYS.getTime());
+                             EPOCH_PLUS_TEN_THOUSAND_DAYS.getTime(), avroData);
   }
 
   @Test
@@ -456,7 +488,7 @@ public class AvroDataTest {
     avroSchema.addProp("connect.version", JsonNodeFactory.instance.numberNode(1));
     avroSchema.addProp(AvroData.AVRO_LOGICAL_TYPE_PROP, AvroData.AVRO_LOGICAL_TIME_MILLIS);
     checkNonRecordConversion(avroSchema, 10000, Time.SCHEMA,
-                             EPOCH_PLUS_TEN_THOUSAND_MILLIS.getTime());
+                             EPOCH_PLUS_TEN_THOUSAND_MILLIS.getTime(), avroData);
   }
 
   @Test
@@ -466,7 +498,7 @@ public class AvroDataTest {
     avroSchema.addProp("connect.version", JsonNodeFactory.instance.numberNode(1));
     avroSchema.addProp(AvroData.AVRO_LOGICAL_TYPE_PROP, AvroData.AVRO_LOGICAL_TIMESTAMP_MILLIS);
     java.util.Date date = new java.util.Date();
-    checkNonRecordConversion(avroSchema, date.getTime(), Timestamp.SCHEMA, date);
+    checkNonRecordConversion(avroSchema, date.getTime(), Timestamp.SCHEMA, date, avroData);
   }
 
   @Test(expected = DataException.class)
@@ -543,41 +575,42 @@ public class AvroDataTest {
     GenericRecord avroIntRecord = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA)
         .set("int", 12)
         .build();
-    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroIntRecord, null, (byte) 12);
-    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroIntRecord, null, (short) 12);
-    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroIntRecord, null, 12);
+    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroIntRecord, null, (byte) 12, avroData);
+    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroIntRecord, null, (short) 12, avroData);
+    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroIntRecord, null, 12, avroData);
 
     GenericRecord avroLongRecord = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA)
         .set("long", 12L)
         .build();
-    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroLongRecord, null, 12L);
+    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroLongRecord, null, 12L, avroData);
 
     GenericRecord avroFloatRecord = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA)
         .set("float", 12.2f)
         .build();
-    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroFloatRecord, null, 12.2f);
+    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroFloatRecord, null, 12.2f, avroData);
 
     GenericRecord avroDoubleRecord = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA)
         .set("double", 12.2)
         .build();
-    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroDoubleRecord, null, 12.2);
+    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroDoubleRecord, null, 12.2, avroData);
 
     GenericRecord avroBooleanRecord = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA)
         .set("boolean", true)
         .build();
-    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroBooleanRecord, null, true);
+    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroBooleanRecord, null, true, avroData);
 
     GenericRecord avroStringRecord = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA)
         .set("string", "teststring")
         .build();
-    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroStringRecord, null, "teststring");
+    checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroStringRecord, null, "teststring",
+        avroData);
 
     GenericRecord avroNullRecord = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA).build();
     GenericRecord avroArrayRecord = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA)
         .set("array", Arrays.asList(avroIntRecord, avroStringRecord, avroNullRecord))
         .build();
     checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroArrayRecord,
-                             null, Arrays.asList(12, "teststring", null));
+                             null, Arrays.asList(12, "teststring", null), avroData);
 
     GenericRecord avroMapEntry = new GenericRecordBuilder(AvroData.ANYTHING_SCHEMA_MAP_ELEMENT)
         .set("key", avroIntRecord)
@@ -594,7 +627,7 @@ public class AvroDataTest {
     convertedMap.put(12, "teststring");
     convertedMap.put(13, null);
     checkNonRecordConversion(AvroData.ANYTHING_SCHEMA, avroMapRecord,
-                             null, convertedMap);
+                             null, convertedMap, avroData);
   }
 
   @Test
@@ -615,6 +648,76 @@ public class AvroDataTest {
     // Should hit limit of cache
     avroData.fromConnectData(Schema.STRING_SCHEMA, "foo");
     assertEquals(2, cache.size());
+  }
+
+  @Test
+  public void testEnum() throws Exception {
+    AvroDataConfig avroDataConfig = new AvroDataConfig.Builder()
+        .with(AvroDataConfig.ENHANCED_AVRO_SCHEMA_SUPPORT_CONFIG, true)
+        .build();
+
+    AvroData avroData = new AvroData(avroDataConfig);
+
+    EnumTest testModel = EnumTest.newBuilder()
+        .setTestkey("name")
+        .setKind(Kind.ONE)
+        .build();
+
+    SchemaAndValue schemaAndValue = avroData.toConnectData(EnumTest.SCHEMA$, testModel);
+    org.apache.kafka.connect.data.Schema schema = schemaAndValue.schema();
+    Object schemaValue = schemaAndValue.value();
+
+    GenericData.Record value = (GenericData.Record) avroData.fromConnectData(schema, schemaValue);
+    GenericContainer userTypeValue = (GenericContainer) value.get("kind");
+    Assert.assertEquals(userTypeValue.getSchema().getType(), org.apache.avro.Schema.Type.ENUM);
+  }
+
+  @Test
+  public void testEnumUnion() throws Exception {
+    GenericData genericData = GenericData.get();
+    AvroDataConfig avroDataConfig = new AvroDataConfig.Builder()
+        .with(AvroDataConfig.ENHANCED_AVRO_SCHEMA_SUPPORT_CONFIG, true)
+        .build();
+
+    AvroData avroData = new AvroData(avroDataConfig);
+
+    EnumUnion testModel = EnumUnion.newBuilder()
+        .setUserType(UserType.ANONYMOUS)
+        .build();
+
+    SchemaAndValue schemaAndValue = avroData.toConnectData(EnumUnion.SCHEMA$, testModel);
+    org.apache.kafka.connect.data.Schema schema = schemaAndValue.schema();
+    Object schemaValue = schemaAndValue.value();
+
+    GenericData.Record value = (GenericData.Record) avroData.fromConnectData(schema, schemaValue);
+
+    org.apache.avro.Schema userTypeSchema = EnumUnion.SCHEMA$.getField("userType").schema();
+
+    Object userTypeValue = value.get("userType");
+
+    int unionIndex = genericData.resolveUnion(userTypeSchema, userTypeValue);
+    Assert.assertEquals(1, unionIndex);
+  }
+
+  @Test
+  public void testEnumUnionNullValue() throws Exception {
+    AvroDataConfig avroDataConfig = new AvroDataConfig.Builder()
+        .with(AvroDataConfig.ENHANCED_AVRO_SCHEMA_SUPPORT_CONFIG, true)
+        .build();
+
+    AvroData avroData = new AvroData(avroDataConfig);
+
+    EnumUnion testModel = EnumUnion.newBuilder()
+        .setUserType(null)
+        .build();
+
+    SchemaAndValue schemaAndValue = avroData.toConnectData(EnumUnion.SCHEMA$, testModel);
+    org.apache.kafka.connect.data.Schema schema = schemaAndValue.schema();
+    Object schemaValue = schemaAndValue.value();
+
+    GenericData.Record value = (GenericData.Record) avroData.fromConnectData(schema, schemaValue);
+    Object userTypeValue = value.get("userType");
+    Assert.assertNull(userTypeValue);
   }
 
   // Avro -> Connect. Validate a) all Avro types that convert directly to Avro, b) specialized
@@ -1173,10 +1276,14 @@ public class AvroDataTest {
   public void testToConnectEnum() {
     // Enums are just converted to strings, original enum is preserved in parameters
     org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder()
-        .enumeration("TestEnum").symbols("foo", "bar", "baz");
+        .enumeration("TestEnum")
+        .doc("some documentation")
+        .symbols("foo", "bar", "baz");
     SchemaBuilder builder = SchemaBuilder.string().name("TestEnum");
-    builder.parameter(CONNECT_ENUM_DOC_PROP, null);
+    builder.parameter(CONNECT_ENUM_DOC_PROP, "some documentation");
+    builder.parameter(CONNECT_RECORD_DOC_PROP, "some documentation");
     builder.parameter(AVRO_TYPE_ENUM, "TestEnum");
+    builder.doc("some documentation");
     for(String enumSymbol : new String[]{"foo", "bar", "baz"}) {
       builder.parameter(AVRO_TYPE_ENUM+"."+enumSymbol, enumSymbol);
     }
@@ -1185,6 +1292,24 @@ public class AvroDataTest {
                  avroData.toConnectData(avroSchema, "bar"));
     assertEquals(new SchemaAndValue(builder.build(), "bar"),
                  avroData.toConnectData(avroSchema, new GenericData.EnumSymbol(avroSchema, "bar")));
+  }
+
+  @Test
+  public void testToConnectEnumWithNoDoc() {
+    // Enums are just converted to strings, original enum is preserved in parameters
+    org.apache.avro.Schema avroSchema = org.apache.avro.SchemaBuilder.builder()
+            .enumeration("TestEnum")
+            .symbols("foo", "bar", "baz");
+    SchemaBuilder builder = SchemaBuilder.string().name("TestEnum");
+    builder.parameter(AVRO_TYPE_ENUM, "TestEnum");
+    for(String enumSymbol : new String[]{"foo", "bar", "baz"}) {
+      builder.parameter(AVRO_TYPE_ENUM+"."+enumSymbol, enumSymbol);
+    }
+
+    assertEquals(new SchemaAndValue(builder.build(), "bar"),
+            avroData.toConnectData(avroSchema, "bar"));
+    assertEquals(new SchemaAndValue(builder.build(), "bar"),
+            avroData.toConnectData(avroSchema, new GenericData.EnumSymbol(avroSchema, "bar")));
   }
 
   @Test
@@ -1409,9 +1534,183 @@ public class AvroDataTest {
     avroData.toConnectSchema(schema);
   }
 
+  @Test
+  public void testCyclicalAvroSchema() {
+    //This test would test the round trip and asserting the intermediate connect data as well
+
+    AvroDataConfig avroDataConfig = new AvroDataConfig.Builder()
+        .with(AvroDataConfig.CONNECT_META_DATA_CONFIG, false)
+        .with(AvroDataConfig.ENHANCED_AVRO_SCHEMA_SUPPORT_CONFIG, false)
+        .build();
+    AvroData listAvroData = new AvroData(avroDataConfig);
+    String linkedListAvroSchema =
+        "{\"type\": \"record\",\"name\": \"linked_list\",\"fields\" : "
+            + "[{\"name\": \"value\", \"type\": \"long\"},"
+            + "{\"name\": \"next\", \"type\": [\"null\", \"linked_list\"],\"default\" : null}]}";
+    org.apache.avro.Schema.Parser avroParser = new org.apache.avro.Schema.Parser();
+    org.apache.avro.Schema avroSchema = avroParser.parse(linkedListAvroSchema);
+
+    GenericRecord next = new GenericRecordBuilder(avroSchema)
+        .set("value", 2l)
+        .set("next", null)
+        .build();
+
+    GenericRecord headNode = new GenericRecordBuilder(avroSchema)
+        .set("value", 3l)
+        .set("next", next)
+        .build();
+
+    SchemaAndValue schemaAndValue = listAvroData.toConnectData(avroSchema, headNode);
+
+    assertNonNullSchemaValue(schemaAndValue);
+    Struct linkedListNode = (Struct) schemaAndValue.value();
+    assertEquals(3l, linkedListNode.get("value"));
+    assertNotNull(linkedListNode.get("next"));
+    linkedListNode = (Struct) linkedListNode.get("next");
+    assertEquals(2l, linkedListNode.get("value"));
+    assertNull(linkedListNode.get("next"));
+
+    GenericRecord genericRecord = (GenericRecord) listAvroData.fromConnectData(
+        schemaAndValue.schema(), schemaAndValue.value());
+
+    assertEquals(headNode, genericRecord);
+
+  }
+
+  @Test
+  public void testArrayCycle() {
+    //This test would test the round trip and asserting the intermediate connect data as well
+    AvroDataConfig avroDataConfig = new AvroDataConfig.Builder()
+        .with(AvroDataConfig.CONNECT_META_DATA_CONFIG, false)
+        .with(AvroDataConfig.ENHANCED_AVRO_SCHEMA_SUPPORT_CONFIG, false)
+        .build();
+    AvroData graphAvroData = new AvroData(avroDataConfig);
+    org.apache.avro.Schema.Parser avroParser = new org.apache.avro.Schema.Parser();
+
+    String graphAvroSchema = "{\"type\": \"record\",\"name\": \"Users\",\"fields\" : [{\"name\": " +
+        "\"name\", \"type\": \"string\"},{\"name\": \"friends\", \"type\" : [ \"null\", " +
+        "{\"type\": \"array\", \"items\":\"Users\"}], \"default\" : null}]}";
+
+    org.apache.avro.Schema graphSchema = avroParser.parse(graphAvroSchema);
+    org.apache.avro.Schema friendsListSchema = graphSchema.getField("friends").schema().getTypes().get(1);
+
+    GenericRecord friend1 = new GenericRecordBuilder(graphSchema)
+        .set("name", "Person A")
+        .build();
+    GenericRecord friend2 = new GenericRecordBuilder(graphSchema)
+        .set("name", "Person B")
+        .set("friends", new GenericData.Array(friendsListSchema, Arrays.asList(friend1)))
+        .build();
+
+    GenericRecord person = new GenericRecordBuilder(graphSchema)
+        .set("name", "Person C")
+        .set("friends", new GenericData.Array(friendsListSchema, Arrays.asList(friend1, friend2)))
+        .build();
+
+    SchemaAndValue schemaAndValue = graphAvroData.toConnectData(graphSchema, person);
+
+    Map<String,List<String>> expectedMap = ImmutableMap.of(
+        "Person C", Arrays.asList("Person A", "Person B"),
+        "Person B", Arrays.asList("Person A"),
+        "Person A", Arrays.asList()
+    );
+    assertNonNullSchemaValue(schemaAndValue);
+    assertPersons("Person C", schemaAndValue.value(), expectedMap);
+
+    GenericRecord genericRecord = (GenericRecord) graphAvroData.fromConnectData(
+        schemaAndValue.schema(), schemaAndValue.value());
+
+    assertEquals(person, genericRecord);
+  }
+
+  private void assertPersons(
+      String currentPerson, Object value, Map<String, List<String>> expectedMap) {
+
+    assertNotNull(value);
+    assertTrue(value instanceof Struct);
+    Struct personStruct = (Struct) value;
+    assertEquals(currentPerson, personStruct.get("name"));
+    if (expectedMap.containsKey(currentPerson) && expectedMap.get(currentPerson).size() > 0) {
+      assertNotNull(personStruct.get("friends"));
+      assertTrue(personStruct.get("friends") instanceof List);
+      List friends = personStruct.getArray("friends");
+      assertEquals(expectedMap.get(currentPerson).size(), friends.size());
+      for (int i = 0; i < friends.size(); i++) {
+        assertPersons(expectedMap.get(currentPerson).get(i), friends.get(i), expectedMap);
+      }
+    } else {
+      assertNull(personStruct.get("friends"));
+    }
+
+  }
+
+  @Test
+  public void testMapCycle() {
+    //This test would test the round trip and asserting the intermediate connect data as well
+    AvroDataConfig avroDataConfig = new AvroDataConfig.Builder()
+        .with(AvroDataConfig.CONNECT_META_DATA_CONFIG, false)
+        .build();
+    AvroData avroData = new AvroData(avroDataConfig);
+    org.apache.avro.Schema.Parser avroParser = new org.apache.avro.Schema.Parser();
+
+    String mapCycleSchema = "{\"type\": \"record\",\"name\": \"Node\",\"fields\" : [{\"name\": " +
+        "\"value\", \"type\": \"long\"},{\"name\": \"siblings\", \"type\" : [ \"null\", " +
+        "{\"type\": \"map\", \"values\":\"Node\"}], \"default\" : null}]}";
+
+    org.apache.avro.Schema graphSchema = avroParser.parse(mapCycleSchema);
+    GenericRecord node1 = new GenericRecordBuilder(graphSchema)
+        .set("value", 1l)
+        .build();
+    GenericRecord node2 = new GenericRecordBuilder(graphSchema)
+        .set("value", 2l)
+        .set("siblings", ImmutableMap.of("node1", node1))
+        .build();
+
+    Map siblings = ImmutableMap.of("node1", node1, "node2", node2);
+    GenericRecord person = new GenericRecordBuilder(graphSchema)
+        .set("value", 3l)
+        .set("siblings", siblings)
+        .build();
+
+    SchemaAndValue schemaAndValue = avroData.toConnectData(graphSchema, person);
+    Map<Long,Map<String, Long>> expectedMap = ImmutableMap.of(
+        3l, ImmutableMap.of("node1",1l, "node2", 2l),
+        2l, ImmutableMap.of("node1",1l),
+        1l, ImmutableMap.of()
+    );
+    assertNonNullSchemaValue(schemaAndValue);
+    assertMapCycle(3l, schemaAndValue.value(), expectedMap);
+    GenericRecord genericRecord = (GenericRecord) avroData.fromConnectData(
+        schemaAndValue.schema(), schemaAndValue.value());
+
+    assertEquals(person, genericRecord);
+  }
+
+  private void assertMapCycle(
+      Long current, Object value, Map<Long, Map<String, Long>> expectedMap) {
+
+    assertNotNull(value);
+    assertTrue(value instanceof Struct);
+    Struct struct = (Struct) value;
+    assertEquals(current, struct.get("value"));
+    if (expectedMap.containsKey(current) && expectedMap.get(current).size() > 0) {
+      assertNotNull(struct.get("siblings"));
+      assertTrue(struct.get("siblings") instanceof Map);
+      Map siblings = struct.getMap("siblings");
+      assertEquals(expectedMap.get(current).size(), siblings.size());
+      assertTrue(expectedMap.get(current).keySet().equals(siblings.keySet()));
+      for (Map.Entry<String, Long> entry : expectedMap.get(current).entrySet()) {
+        assertMapCycle(entry.getValue(), siblings.get(entry.getKey()), expectedMap);
+      }
+    } else {
+      assertNull(struct.get("siblings"));
+    }
+
+  }
+
   private NonRecordContainer checkNonRecordConversion(
       org.apache.avro.Schema expectedSchema, Object expected,
-      Schema schema, Object value)
+      Schema schema, Object value, AvroData avroData)
   {
     Object converted = avroData.fromConnectData(schema, value);
     assertTrue(converted instanceof NonRecordContainer);
@@ -1426,4 +1725,12 @@ public class AvroDataTest {
     Object converted = avroData.fromConnectData(schema, null);
     assertNull(converted);
   }
+
+  private void assertNonNullSchemaValue(SchemaAndValue schemaAndValue) {
+    assertNotNull(schemaAndValue);
+    assertNotNull(schemaAndValue.schema());
+    assertNotNull(schemaAndValue.value());
+  }
+
+
 }
