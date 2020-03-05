@@ -1,31 +1,33 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 
 package io.confluent.kafka.schemaregistry.storage.serialization;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.util.Map;
 
+import io.confluent.kafka.schemaregistry.storage.ClearSubjectKey;
+import io.confluent.kafka.schemaregistry.storage.ClearSubjectValue;
 import io.confluent.kafka.schemaregistry.storage.ConfigValue;
 import io.confluent.kafka.schemaregistry.storage.DeleteSubjectKey;
 import io.confluent.kafka.schemaregistry.storage.DeleteSubjectValue;
+import io.confluent.kafka.schemaregistry.storage.ModeKey;
+import io.confluent.kafka.schemaregistry.storage.ModeValue;
 import io.confluent.kafka.schemaregistry.storage.NoopKey;
 import io.confluent.kafka.schemaregistry.storage.SchemaValue;
 import io.confluent.kafka.schemaregistry.storage.ConfigKey;
@@ -34,6 +36,7 @@ import io.confluent.kafka.schemaregistry.storage.SchemaRegistryKey;
 import io.confluent.kafka.schemaregistry.storage.SchemaRegistryKeyType;
 import io.confluent.kafka.schemaregistry.storage.SchemaRegistryValue;
 import io.confluent.kafka.schemaregistry.storage.exceptions.SerializationException;
+import io.confluent.kafka.schemaregistry.utils.JacksonMapper;
 
 public class SchemaRegistrySerializer
     implements Serializer<SchemaRegistryKey, SchemaRegistryValue> {
@@ -49,7 +52,7 @@ public class SchemaRegistrySerializer
   @Override
   public byte[] serializeKey(SchemaRegistryKey key) throws SerializationException {
     try {
-      return new ObjectMapper().writeValueAsBytes(key);
+      return JacksonMapper.INSTANCE.writeValueAsBytes(key);
     } catch (IOException e) {
       throw new SerializationException("Error while serializing schema key" + key.toString(),
                                        e);
@@ -63,7 +66,7 @@ public class SchemaRegistrySerializer
   @Override
   public byte[] serializeValue(SchemaRegistryValue value) throws SerializationException {
     try {
-      return new ObjectMapper().writeValueAsBytes(value);
+      return JacksonMapper.INSTANCE.writeValueAsBytes(value);
     } catch (IOException e) {
       throw new SerializationException(
           "Error while serializing value schema value " + value.toString(),
@@ -78,17 +81,21 @@ public class SchemaRegistrySerializer
     try {
       try {
         Map<Object, Object> keyObj = null;
-        keyObj = new ObjectMapper().readValue(key,
-                                              new TypeReference<Map<Object, Object>>() {});
+        keyObj = JacksonMapper.INSTANCE.readValue(
+            key, new TypeReference<Map<Object, Object>>() {});
         keyType = SchemaRegistryKeyType.forName((String) keyObj.get("keytype"));
         if (keyType == SchemaRegistryKeyType.CONFIG) {
-          schemaKey = new ObjectMapper().readValue(key, ConfigKey.class);
+          schemaKey = JacksonMapper.INSTANCE.readValue(key, ConfigKey.class);
+        } else if (keyType == SchemaRegistryKeyType.MODE) {
+          schemaKey = JacksonMapper.INSTANCE.readValue(key, ModeKey.class);
         } else if (keyType == SchemaRegistryKeyType.NOOP) {
-          schemaKey = new ObjectMapper().readValue(key, NoopKey.class);
+          schemaKey = JacksonMapper.INSTANCE.readValue(key, NoopKey.class);
         } else if (keyType == SchemaRegistryKeyType.DELETE_SUBJECT) {
-          schemaKey = new ObjectMapper().readValue(key, DeleteSubjectKey.class);
+          schemaKey = JacksonMapper.INSTANCE.readValue(key, DeleteSubjectKey.class);
+        } else if (keyType == SchemaRegistryKeyType.CLEAR_SUBJECT) {
+          schemaKey = JacksonMapper.INSTANCE.readValue(key, ClearSubjectKey.class);
         } else if (keyType == SchemaRegistryKeyType.SCHEMA) {
-          schemaKey = new ObjectMapper().readValue(key, SchemaKey.class);
+          schemaKey = JacksonMapper.INSTANCE.readValue(key, SchemaKey.class);
           validateMagicByte((SchemaKey) schemaKey);
         }
       } catch (JsonProcessingException e) {
@@ -112,8 +119,10 @@ public class SchemaRegistrySerializer
    * @param value Bytes of the serialized value
    * @return Typed deserialized value. Must be one of
    *     {@link io.confluent.kafka.schemaregistry.storage.ConfigValue}
+   *     or {@link io.confluent.kafka.schemaregistry.storage.ModeValue}
    *     or {@link io.confluent.kafka.schemaregistry.storage.SchemaValue}
    *     or {@link io.confluent.kafka.schemaregistry.storage.DeleteSubjectValue}
+   *     or {@link io.confluent.kafka.schemaregistry.storage.ClearSubjectValue}
    */
   @Override
   public SchemaRegistryValue deserializeValue(SchemaRegistryKey key, byte[] value)
@@ -121,22 +130,34 @@ public class SchemaRegistrySerializer
     SchemaRegistryValue schemaRegistryValue = null;
     if (key.getKeyType().equals(SchemaRegistryKeyType.CONFIG)) {
       try {
-        schemaRegistryValue = new ObjectMapper().readValue(value, ConfigValue.class);
+        schemaRegistryValue = JacksonMapper.INSTANCE.readValue(value, ConfigValue.class);
       } catch (IOException e) {
         throw new SerializationException("Error while deserializing config", e);
+      }
+    } else if (key.getKeyType().equals(SchemaRegistryKeyType.MODE)) {
+      try {
+        schemaRegistryValue = JacksonMapper.INSTANCE.readValue(value, ModeValue.class);
+      } catch (IOException e) {
+        throw new SerializationException("Error while deserializing schema", e);
       }
     } else if (key.getKeyType().equals(SchemaRegistryKeyType.SCHEMA)) {
       try {
         validateMagicByte((SchemaKey) key);
-        schemaRegistryValue = new ObjectMapper().readValue(value, SchemaValue.class);
+        schemaRegistryValue = JacksonMapper.INSTANCE.readValue(value, SchemaValue.class);
       } catch (IOException e) {
         throw new SerializationException("Error while deserializing schema", e);
       }
     } else if (key.getKeyType().equals(SchemaRegistryKeyType.DELETE_SUBJECT)) {
       try {
-        schemaRegistryValue = new ObjectMapper().readValue(value, DeleteSubjectValue.class);
+        schemaRegistryValue = JacksonMapper.INSTANCE.readValue(value, DeleteSubjectValue.class);
       } catch (IOException e) {
         throw new SerializationException("Error while deserializing Delete Subject message", e);
+      }
+    } else if (key.getKeyType().equals(SchemaRegistryKeyType.CLEAR_SUBJECT)) {
+      try {
+        schemaRegistryValue = JacksonMapper.INSTANCE.readValue(value, ClearSubjectValue.class);
+      } catch (IOException e) {
+        throw new SerializationException("Error while deserializing Clear Subject message", e);
       }
     } else {
       throw new SerializationException("Unrecognized key type. Must be one of schema or config");

@@ -1,5 +1,5 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,17 @@
 package io.confluent.kafka.schemaregistry.client.rest.entities.requests;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+
+import io.confluent.kafka.schemaregistry.utils.JacksonMapper;
 
 public class RegisterSchemaResponse {
 
   private int id;
 
   public static RegisterSchemaResponse fromJson(String json) throws IOException {
-    return new ObjectMapper().readValue(json, RegisterSchemaResponse.class);
+    return JacksonMapper.INSTANCE.readValue(json, RegisterSchemaResponse.class);
   }
 
   @JsonProperty("id")
@@ -40,6 +41,6 @@ public class RegisterSchemaResponse {
   }
 
   public String toJson() throws IOException {
-    return new ObjectMapper().writeValueAsString(this);
+    return JacksonMapper.INSTANCE.writeValueAsString(this);
   }
 }

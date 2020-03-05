@@ -1,5 +1,5 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,15 @@
  */
 package io.confluent.kafka.serializers;
 
+import io.confluent.kafka.example.ExtendedWidget;
+import io.confluent.kafka.example.Widget;
+
+import com.google.common.collect.ImmutableMap;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.IndexedRecord;
+import org.apache.avro.reflect.ReflectData;
 import org.apache.avro.util.Utf8;
 import org.apache.kafka.common.errors.SerializationException;
 import org.junit.Test;
@@ -28,9 +33,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
-import avro.shaded.com.google.common.collect.ImmutableMap;
 import io.confluent.kafka.example.ExtendedUser;
 import io.confluent.kafka.example.User;
+import io.confluent.kafka.schemaregistry.avro.AvroSchema;
+import io.confluent.kafka.schemaregistry.avro.AvroSchemaUtils;
 import io.confluent.kafka.schemaregistry.client.MockSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
@@ -49,10 +55,13 @@ public class KafkaAvroSerializerTest {
   private final SchemaRegistryClient schemaRegistry;
   private final KafkaAvroSerializer avroSerializer;
   private final KafkaAvroDeserializer avroDeserializer;
+  private final KafkaAvroSerializer reflectionAvroSerializer;
   private final KafkaAvroDecoder avroDecoder;
   private final String topic;
   private final KafkaAvroDeserializer specificAvroDeserializer;
   private final KafkaAvroDecoder specificAvroDecoder;
+  private final KafkaAvroDeserializer reflectionAvroDeserializer;
+  private final KafkaAvroDecoder reflectionAvroDecoder;
 
   public KafkaAvroSerializerTest() {
     Properties defaultConfig = new Properties();
@@ -78,6 +87,21 @@ public class KafkaAvroSerializerTest {
     specificAvroDecoder = new KafkaAvroDecoder(
         schemaRegistry, new VerifiableProperties(specificDecoderProps));
 
+    HashMap<String, String> reflectionProps = new HashMap<String, String>();
+    // Intentionally invalid schema registry URL to satisfy the config class's requirement that
+    // it be set.
+    reflectionProps.put(KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, "bogus");
+    reflectionProps.put(KafkaAvroDeserializerConfig.SCHEMA_REFLECTION_CONFIG, "true");
+    reflectionAvroSerializer = new KafkaAvroSerializer(schemaRegistry, reflectionProps);
+    reflectionAvroDeserializer = new KafkaAvroDeserializer(schemaRegistry, reflectionProps);
+
+    Properties reflectionDecoderProps = new Properties();
+    reflectionDecoderProps.setProperty(
+            KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, "bogus");
+    reflectionDecoderProps.setProperty(
+            KafkaAvroDeserializerConfig.SCHEMA_REFLECTION_CONFIG, "true");
+    reflectionAvroDecoder = new KafkaAvroDecoder(
+            schemaRegistry, new VerifiableProperties(reflectionDecoderProps));
   }
 
   private IndexedRecord createAvroRecord() {
@@ -195,7 +219,7 @@ public class KafkaAvroSerializerTest {
     );
     avroSerializer.configure(configs, false);
     IndexedRecord avroRecord = createAvroRecord();
-    schemaRegistry.register(topic + "-value", avroRecord.getSchema());
+    schemaRegistry.register(topic + "-value", new AvroSchema(avroRecord.getSchema()));
     byte[] bytes = avroSerializer.serialize(topic, avroRecord);
     assertEquals(avroRecord, avroDeserializer.deserialize(topic, bytes));
     assertEquals(avroRecord, avroDecoder.fromBytes(bytes));
@@ -336,7 +360,72 @@ public class KafkaAvroSerializerTest {
   }
 
   @Test
-  public void testKafkaAvroSerializerNonexistantSpecificRecord() {
+  public void testKafkaAvroSerializerReflectionRecord() {
+    byte[] bytes;
+    Object obj;
+
+    Widget widget = new Widget("alice");
+    Schema schema = ReflectData.get().getSchema(widget.getClass());
+
+    bytes = reflectionAvroSerializer.serialize(topic, widget);
+
+    obj = reflectionAvroDecoder.fromBytes(bytes, schema);
+    assertTrue(
+            "Returned object should be a io.confluent.kafka.example.User",
+            Widget.class.isInstance(obj)
+    );
+    assertEquals(widget, obj);
+
+    obj = reflectionAvroDeserializer.deserialize(topic, bytes, schema);
+    assertTrue(
+            "Returned object should be a io.confluent.kafka.example.User",
+            Widget.class.isInstance(obj)
+    );
+    assertEquals(widget, obj);
+  }
+
+  @Test
+  public void testKafkaAvroSerializerReflectionRecordWithProjection() {
+    byte[] bytes;
+    Object obj;
+
+    ExtendedWidget widget = new ExtendedWidget("alice", 20);
+    Schema extendedWidgetSchema = ReflectData.get().getSchema(ExtendedWidget.class);
+    Schema widgetSchema = ReflectData.get().getSchema(Widget.class);
+
+    bytes = reflectionAvroSerializer.serialize(topic, widget);
+
+    obj = reflectionAvroDecoder.fromBytes(bytes, extendedWidgetSchema);
+    assertTrue(
+            "Full object should be a io.confluent.kafka.example.ExtendedWidget",
+            ExtendedWidget.class.isInstance(obj)
+    );
+    assertEquals(widget, obj);
+
+    obj = reflectionAvroDecoder.fromBytes(bytes, widgetSchema);
+    assertTrue(
+            "Projection object should be a io.confluent.kafka.example.Widget",
+            Widget.class.isInstance(obj)
+    );
+    assertEquals("alice", ((Widget) obj).getName());
+
+    obj = reflectionAvroDeserializer.deserialize(topic, bytes, extendedWidgetSchema);
+    assertTrue(
+            "Full object should be a io.confluent.kafka.example.ExtendedWidget",
+            ExtendedWidget.class.isInstance(obj)
+    );
+    assertEquals(widget, obj);
+
+    obj = reflectionAvroDeserializer.deserialize(topic, bytes, widgetSchema);
+    assertTrue(
+            "Projection object should be a io.confluent.kafka.example.Widget",
+            Widget.class.isInstance(obj)
+    );
+    assertEquals("alice", ((Widget) obj).getName());
+  }
+
+  @Test
+  public void testKafkaAvroSerializerNonexistantReflectionRecord() {
     byte[] bytes;
 
     IndexedRecord avroRecord = createAvroRecord();
@@ -388,7 +477,7 @@ public class KafkaAvroSerializerTest {
     HashMap<String, String> props = new HashMap<>();
     props.put(KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, "bogus");
     props.put(KafkaAvroDeserializerConfig.SPECIFIC_AVRO_READER_CONFIG, "true");
-    props.put(AbstractKafkaAvroSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_CONFIG, "5");
+    props.put(AbstractKafkaSchemaSerDeConfig.MAX_SCHEMAS_PER_SUBJECT_CONFIG, "5");
     avroSerializer.configure(props, false);
   }
 
@@ -408,6 +497,32 @@ public class KafkaAvroSerializerTest {
     assertEquals(message, obj);
 
     obj = specificAvroDeserializer.deserialize(topic, bytes);
+    assertTrue("Returned object should be a String", String.class.isInstance(obj));
+    assertEquals(message, obj);
+  }
+
+  @Test
+  public void testKafkaAvroSerializerReflectionRecordWithPrimitives() {
+    byte[] bytes;
+    Object obj;
+
+    String message = "testKafkaAvroSerializerReflectionRecordWithPrimitives";
+    Schema schema = AvroSchemaUtils.getSchema(message);
+    bytes = avroSerializer.serialize(topic, message);
+
+    obj = avroDecoder.fromBytes(bytes);
+    assertTrue("Returned object should be a String", String.class.isInstance(obj));
+    assertEquals(message, obj);
+
+    obj = avroDeserializer.deserialize(topic, bytes);
+    assertTrue("Returned object should be a String", String.class.isInstance(obj));
+    assertEquals(message, obj);
+
+    obj = reflectionAvroDecoder.fromBytes(bytes, schema);
+    assertTrue("Returned object should be a String", String.class.isInstance(obj));
+    assertEquals(message, obj);
+
+    obj = reflectionAvroDeserializer.deserialize(topic, bytes, schema);
     assertTrue("Returned object should be a String", String.class.isInstance(obj));
     assertEquals(message, obj);
   }

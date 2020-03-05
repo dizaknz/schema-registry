@@ -1,18 +1,17 @@
-/**
- * Copyright 2017 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- **/
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
+ */
 
 package io.confluent.kafka.schemaregistry.masterelector.kafka;
 
@@ -21,16 +20,20 @@ import org.apache.kafka.clients.MockClient;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
+import org.apache.kafka.common.internals.ClusterResourceListeners;
+import org.apache.kafka.common.message.JoinGroupRequestData;
+import org.apache.kafka.common.message.JoinGroupResponseData;
+import org.apache.kafka.common.message.SyncGroupResponseData;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.requests.AbstractRequest;
 import org.apache.kafka.common.requests.FindCoordinatorResponse;
-import org.apache.kafka.common.requests.JoinGroupRequest.ProtocolMetadata;
 import org.apache.kafka.common.requests.JoinGroupResponse;
 import org.apache.kafka.common.requests.SyncGroupRequest;
 import org.apache.kafka.common.requests.SyncGroupResponse;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.test.TestUtils;
 import org.junit.After;
 import org.junit.Before;
@@ -89,15 +92,28 @@ public class SchemaRegistryCoordinatorTest {
   @Before
   public void setup() {
     this.time = new MockTime();
-    this.client = new MockClient(time);
-    this.metadata = new Metadata(0, Long.MAX_VALUE, true);
-    this.metadata.update(cluster, Collections.<String>emptySet(), time.milliseconds());
+    this.metadata = new Metadata(0, Long.MAX_VALUE, new LogContext(), new ClusterResourceListeners());
+    this.client = new MockClient(time, new MockClient.MockMetadataUpdater() {
+      @Override
+      public List<Node> fetchNodes() {
+        return cluster.nodes();
+      }
+
+      @Override
+      public boolean isUpdateNeeded() {
+        return false;
+      }
+
+      @Override
+      public void update(Time time, MockClient.MetadataUpdate update) {
+        throw new UnsupportedOperationException();
+      }
+    });
+
     LogContext logContext = new LogContext();
     this.consumerClient = new ConsumerNetworkClient(logContext, client, metadata, time, 100, 1000, Integer.MAX_VALUE);
     this.metrics = new Metrics(time);
     this.rebalanceListener = new MockRebalanceListener();
-
-    client.setNode(node);
 
     this.coordinator = new SchemaRegistryCoordinator(
         logContext,
@@ -125,13 +141,13 @@ public class SchemaRegistryCoordinatorTest {
 
   @Test
   public void testMetadata() {
-    List<ProtocolMetadata> serialized = coordinator.metadata();
+    JoinGroupRequestData.JoinGroupRequestProtocolCollection serialized = coordinator.metadata();
     assertEquals(1, serialized.size());
 
-    ProtocolMetadata defaultMetadata = serialized.get(0);
+    JoinGroupRequestData.JoinGroupRequestProtocol defaultMetadata = serialized.iterator().next();
     assertEquals(SchemaRegistryCoordinator.SR_SUBPROTOCOL_V0, defaultMetadata.name());
     SchemaRegistryIdentity state
-        = SchemaRegistryProtocol.deserializeMetadata(defaultMetadata.metadata());
+        = SchemaRegistryProtocol.deserializeMetadata(ByteBuffer.wrap(defaultMetadata.metadata()));
     assertEquals(LEADER_INFO, state);
   }
 
@@ -155,9 +171,9 @@ public class SchemaRegistryCoordinatorTest {
       @Override
       public boolean matches(AbstractRequest body) {
         SyncGroupRequest sync = (SyncGroupRequest) body;
-        return sync.memberId().equals(consumerId) &&
-               sync.generationId() == 1 &&
-               sync.groupAssignment().containsKey(consumerId);
+        return sync.data.memberId().equals(consumerId) &&
+               sync.data.generationId() == 1 &&
+               sync.groupAssignments().containsKey(consumerId);
       }
     }, syncGroupResponse);
     coordinator.ensureActiveGroup();
@@ -192,9 +208,9 @@ public class SchemaRegistryCoordinatorTest {
       @Override
       public boolean matches(AbstractRequest body) {
         SyncGroupRequest sync = (SyncGroupRequest) body;
-        return sync.memberId().equals(consumerId) &&
-               sync.generationId() == 1 &&
-               sync.groupAssignment().containsKey(consumerId);
+        return sync.data.memberId().equals(consumerId) &&
+               sync.data.generationId() == 1 &&
+               sync.groupAssignments().containsKey(consumerId);
       }
     }, syncGroupResponse);
 
@@ -231,9 +247,9 @@ public class SchemaRegistryCoordinatorTest {
       @Override
       public boolean matches(AbstractRequest body) {
         SyncGroupRequest sync = (SyncGroupRequest) body;
-        return sync.memberId().equals(consumerId) &&
-               sync.generationId() == 1 &&
-               sync.groupAssignment().containsKey(consumerId);
+        return sync.data.memberId().equals(consumerId) &&
+               sync.data.generationId() == 1 &&
+               sync.groupAssignments().containsKey(consumerId);
       }
     }, syncGroupResponse);
 
@@ -266,9 +282,9 @@ public class SchemaRegistryCoordinatorTest {
       @Override
       public boolean matches(AbstractRequest body) {
         SyncGroupRequest sync = (SyncGroupRequest) body;
-        return sync.memberId().equals(consumerId) &&
-               sync.generationId() == 1 &&
-               sync.groupAssignment().isEmpty();
+        return sync.data.memberId().equals(consumerId) &&
+               sync.data.generationId() == 1 &&
+               sync.groupAssignments().isEmpty();
       }
     }, syncGroupResponse);
     coordinator.ensureActiveGroup();
@@ -282,7 +298,7 @@ public class SchemaRegistryCoordinatorTest {
   }
 
   private FindCoordinatorResponse groupCoordinatorResponse(Node node, Errors error) {
-    return new FindCoordinatorResponse(error, node);
+    return FindCoordinatorResponse.prepareResponse(error, node);
   }
 
   private JoinGroupResponse joinGroupLeaderResponse(
@@ -291,14 +307,21 @@ public class SchemaRegistryCoordinatorTest {
       Map<String, SchemaRegistryIdentity> memberMasterEligibility,
       Errors error
   ) {
-    Map<String, ByteBuffer> metadata = new HashMap<>();
+    List<JoinGroupResponseData.JoinGroupResponseMember> metadata = new ArrayList<>();
     for (Map.Entry<String, SchemaRegistryIdentity> configStateEntry : memberMasterEligibility.entrySet()) {
       SchemaRegistryIdentity memberIdentity = configStateEntry.getValue();
       ByteBuffer buf = SchemaRegistryProtocol.serializeMetadata(memberIdentity);
-      metadata.put(configStateEntry.getKey(), buf);
+      metadata.add(new JoinGroupResponseData.JoinGroupResponseMember()
+          .setMemberId(configStateEntry.getKey())
+          .setMetadata(buf.array()));
     }
-    return new JoinGroupResponse(error, generationId, SchemaRegistryCoordinator
-        .SR_SUBPROTOCOL_V0, memberId, memberId, metadata);
+    return new JoinGroupResponse(new JoinGroupResponseData()
+            .setErrorCode(error.code())
+            .setGenerationId(generationId)
+            .setProtocolName(SchemaRegistryCoordinator.SR_SUBPROTOCOL_V0)
+            .setMemberId(memberId)
+            .setLeader(memberId)
+            .setMembers(metadata));
   }
 
   private JoinGroupResponse joinGroupFollowerResponse(
@@ -307,13 +330,13 @@ public class SchemaRegistryCoordinatorTest {
       String leaderId,
       Errors error
   ) {
-    return new JoinGroupResponse(
-        error,
-        generationId,
-        SchemaRegistryCoordinator.SR_SUBPROTOCOL_V0,
-        memberId,
-        leaderId,
-        Collections.<String, ByteBuffer>emptyMap()
+    return new JoinGroupResponse(new JoinGroupResponseData()
+        .setErrorCode(error.code())
+        .setGenerationId(generationId)
+        .setProtocolName(SchemaRegistryCoordinator.SR_SUBPROTOCOL_V0)
+        .setMemberId(memberId)
+        .setLeader(leaderId)
+        .setMembers(Collections.emptyList())
     );
   }
 
@@ -327,7 +350,10 @@ public class SchemaRegistryCoordinatorTest {
         assignmentError, master, masterIdentity
     );
     ByteBuffer buf = SchemaRegistryProtocol.serializeAssignment(assignment);
-    return new SyncGroupResponse(error, buf);
+    return new SyncGroupResponse(new SyncGroupResponseData()
+        .setErrorCode(error.code())
+        .setAssignment(buf.array())
+    );
   }
 
   private static class MockRebalanceListener implements SchemaRegistryRebalanceListener {

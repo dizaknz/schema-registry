@@ -1,5 +1,5 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,21 +30,30 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Properties;
 
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.MockSchemaRegistryClient;
+import io.confluent.kafka.serializers.KafkaAvroDeserializerConfig;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class KafkaAvroFormatterTest {
 
+  private Properties props;
+  private AvroMessageFormatter formatter;
   private Schema recordSchema = null;
   private Schema intSchema = null;
   private SchemaRegistryClient schemaRegistry = null;
 
   @Before
   public void setUp() {
+    props = new Properties();
+    props.put(KafkaAvroDeserializerConfig.SCHEMA_REGISTRY_URL_CONFIG, "bogus");
+
     String userSchema = "{\"namespace\": \"example.avro\"," +
                         "\"type\": \"record\"," +
                         "\"name\": \"User\"," +
@@ -53,10 +62,13 @@ public class KafkaAvroFormatterTest {
     recordSchema = parser.parse(userSchema);
     intSchema = parser.parse("{\"type\" : \"int\"}");
     schemaRegistry = new MockSchemaRegistryClient();
+    formatter = new AvroMessageFormatter(schemaRegistry, null);
   }
 
   @Test
   public void testKafkaAvroValueFormatter() {
+    formatter.init(props);
+
     String inputJson = "{\"name\":\"myname\"}\n";
     BufferedReader reader =
         new BufferedReader(new InputStreamReader(new ByteArrayInputStream(inputJson.getBytes())));
@@ -67,7 +79,6 @@ public class KafkaAvroFormatterTest {
     byte[] serializedValue = message.value();
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     PrintStream ps = new PrintStream(baos);
-    AvroMessageFormatter formatter = new AvroMessageFormatter(schemaRegistry, false, null);
     ConsumerRecord<byte[], byte[]> crecord = new ConsumerRecord<>(
         "topic1", 0, 200, 1000, TimestampType.LOG_APPEND_TIME, 0, 0, serializedValue.length,
         null, serializedValue);
@@ -79,6 +90,9 @@ public class KafkaAvroFormatterTest {
 
   @Test
   public void testKafkaAvroKeyValueFormatter() {
+    props.put("print.key", "true");
+    formatter.init(props);
+
     String inputJson = "10\t{\"name\":\"myname\"}\n";
     BufferedReader reader =
         new BufferedReader(new InputStreamReader(new ByteArrayInputStream(inputJson.getBytes())));
@@ -90,7 +104,6 @@ public class KafkaAvroFormatterTest {
     byte[] serializedValue = message.value();
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     PrintStream ps = new PrintStream(baos);
-    AvroMessageFormatter formatter = new AvroMessageFormatter(schemaRegistry, true, null);
     ConsumerRecord<byte[], byte[]> crecord = new ConsumerRecord<>(
         "topic1", 0, 200, 1000, TimestampType.LOG_APPEND_TIME, 0, serializedKey.length,
         serializedValue.length, serializedKey, serializedValue);
@@ -98,6 +111,35 @@ public class KafkaAvroFormatterTest {
     String outputJson = baos.toString();
 
     assertEquals("Input key/value json should match output key/value json", inputJson, outputJson);
+  }
+
+  @Test
+  public void testKafkaAvroValueWithTimestampFormatter() {
+    props.put("print.timestamp", "true");
+    formatter.init(props);
+
+    long timestamp = 1000;
+    TimestampType timestampType = TimestampType.LOG_APPEND_TIME;
+
+    String inputJson = "{\"name\":\"myname\"}\n";
+    String expectedJson = String.format("%s:%d\t%s",
+            timestampType.name, timestamp, inputJson);
+    BufferedReader reader =
+            new BufferedReader(new InputStreamReader(new ByteArrayInputStream(inputJson.getBytes())));
+    AvroMessageReader avroReader =
+            new AvroMessageReader(schemaRegistry, null, recordSchema, "topic1", false, reader, true);
+    ProducerRecord<byte[], byte[]> message = avroReader.readMessage();
+
+    byte[] serializedValue = message.value();
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream ps = new PrintStream(baos);
+    ConsumerRecord<byte[], byte[]> crecord = new ConsumerRecord<>(
+            "topic1", 0, 200, timestamp, timestampType, 0, 0, serializedValue.length,
+            null, serializedValue);
+    formatter.writeTo(crecord, ps);
+    String outputJson = baos.toString();
+
+    assertEquals("Input value json should match output value json", expectedJson, outputJson);
   }
 
   @Test
@@ -109,6 +151,7 @@ public class KafkaAvroFormatterTest {
         new AvroMessageReader(schemaRegistry, null, recordSchema, "topic1", false, reader, true);
     try {
       avroReader.readMessage();
+      fail("Registering an invalid schema should fail");
     } catch (SerializationException e) {
       assertTrue("The cause of the exception should be avro",
                  e.getCause() instanceof AvroRuntimeException);
@@ -117,6 +160,10 @@ public class KafkaAvroFormatterTest {
 
   @Test
   public void testStringKey() {
+    props.put("print.key", "true");
+    formatter = new AvroMessageFormatter(schemaRegistry, new StringDeserializer());
+    formatter.init(props);
+
     String inputJson = "{\"name\":\"myname\"}\n";
     String expectedJson = "TestKey\t"+inputJson;
     BufferedReader reader =
@@ -130,10 +177,42 @@ public class KafkaAvroFormatterTest {
     byte[] serializedValue = message.value();
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     PrintStream ps = new PrintStream(baos);
-    AvroMessageFormatter formatter = new AvroMessageFormatter(schemaRegistry, true, new StringDeserializer());
     ConsumerRecord<byte[], byte[]> crecord = new ConsumerRecord<>(
         "topic1", 0, 200, 1000, TimestampType.LOG_APPEND_TIME, 0, serializedKey.length,
         serializedValue.length, serializedKey, serializedValue);
+    formatter.writeTo(crecord, ps);
+    String outputJson = baos.toString();
+
+    assertEquals("Input key/value json should match output key/value json", expectedJson, outputJson);
+  }
+
+  @Test
+  public void testStringKeyWithTimestamp() {
+    props.put("print.key", "true");
+    props.put("print.timestamp", "true");
+    formatter = new AvroMessageFormatter(schemaRegistry, new StringDeserializer());
+    formatter.init(props);
+
+    long timestamp = 1000;
+    TimestampType timestampType = TimestampType.LOG_APPEND_TIME;
+
+    String inputJson = "{\"name\":\"myname\"}\n";
+    String expectedJson = String.format("%s:%d\tTestKey\t%s",
+            timestampType.name, timestamp, inputJson);
+    BufferedReader reader =
+            new BufferedReader(new InputStreamReader(new ByteArrayInputStream(inputJson.getBytes())));
+    AvroMessageReader avroReader =
+            new AvroMessageReader(schemaRegistry, null, recordSchema, "topic1", false, reader,
+                    true);
+    ProducerRecord<byte[], byte[]> message = avroReader.readMessage();
+
+    byte[] serializedKey = "TestKey".getBytes();
+    byte[] serializedValue = message.value();
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream ps = new PrintStream(baos);
+    ConsumerRecord<byte[], byte[]> crecord = new ConsumerRecord<>(
+            "topic1", 0, 200, timestamp, timestampType, 0, serializedKey.length,
+            serializedValue.length, serializedKey, serializedValue);
     formatter.writeTo(crecord, ps);
     String outputJson = baos.toString();
 

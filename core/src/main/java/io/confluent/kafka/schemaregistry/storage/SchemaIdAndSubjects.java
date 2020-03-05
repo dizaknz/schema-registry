@@ -1,23 +1,24 @@
 /*
- * Copyright 2015 Confluent Inc.
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 
 package io.confluent.kafka.schemaregistry.storage;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 /**
  * Kafka schema registry maintains a few in memory indices to facilitate schema lookups. One such
@@ -33,7 +34,12 @@ public class SchemaIdAndSubjects {
   private Map<String, Integer> subjectsAndVersions;
 
   public SchemaIdAndSubjects(int id) {
-    this.subjectsAndVersions = new HashMap<String, Integer>();
+    this.subjectsAndVersions = new ConcurrentHashMap<>();
+    this.id = id;
+  }
+
+  public SchemaIdAndSubjects(int id, Map<String, Integer> subjectsAndVersions) {
+    this.subjectsAndVersions = subjectsAndVersions;
     this.id = id;
   }
 
@@ -51,6 +57,31 @@ public class SchemaIdAndSubjects {
 
   public int getSchemaId() {
     return this.id;
+  }
+
+  public boolean isEmpty() {
+    return subjectsAndVersions.isEmpty();
+  }
+
+  public SchemaKey findAny(Predicate<SchemaKey> filter) {
+    return subjectsAndVersions.entrySet().stream()
+        .map(e -> new SchemaKey(e.getKey(), e.getValue()))
+        .filter(key -> filter.test(key))
+        .findAny()
+        .orElse(null);
+  }
+
+  public Set<String> allSubjects() {
+    return subjectsAndVersions.keySet();
+  }
+
+  public Map<String, Integer> allSubjectVersions() {
+    return subjectsAndVersions;
+  }
+
+  public void removeIf(Predicate<SchemaKey> filter) {
+    subjectsAndVersions.entrySet().removeIf(e ->
+        filter.test(new SchemaKey(e.getKey(), e.getValue())));
   }
 
   @Override

@@ -1,22 +1,27 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 package io.confluent.kafka.schemaregistry.utils;
 
+import org.apache.avro.Protocol;
+import org.apache.avro.Schema;
+import org.apache.avro.Schemas;
+
+import io.confluent.kafka.schemaregistry.avro.AvroSchema;
 import io.confluent.kafka.schemaregistry.avro.AvroUtils;
 import io.confluent.kafka.schemaregistry.client.rest.RestService;
+import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaReference;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
 
 import java.io.File;
@@ -117,7 +122,23 @@ public class TestUtils {
     assertEquals("Registered schema should be found",
             schemaString,
             restService.getId(expectedId).getSchemaString());
+  }
 
+  public static void registerAndVerifySchema(RestService restService, String schemaString,
+                                             List<SchemaReference> references, int expectedId,
+                                             String subject)
+      throws IOException, RestClientException {
+    int registeredId = restService.registerSchema(schemaString,
+        AvroSchema.TYPE,
+        references,
+        subject
+    );
+    assertEquals("Registering a new schema should succeed", expectedId, registeredId);
+
+    // the newly registered schema should be immediately readable on the master
+    assertEquals("Registered schema should be found",
+        schemaString,
+        restService.getId(expectedId).getSchemaString());
   }
 
   public static List<String> getRandomCanonicalAvroString(int num) {
@@ -129,8 +150,35 @@ public class TestUtils {
                             + "\"fields\":"
                             + "[{\"type\":\"string\",\"name\":"
                             + "\"f" + random.nextInt(Integer.MAX_VALUE) + "\"}]}";
-      avroStrings.add(AvroUtils.parseSchema(schemaString).canonicalString);
+      avroStrings.add(AvroUtils.parseSchema(schemaString).canonicalString());
     }
     return avroStrings;
   }
+
+  public static List<String> getAvroSchemaWithReferences() {
+    List<String> schemas = new ArrayList<>();
+    String reference = "{\"type\":\"record\","
+        + "\"name\":\"subrecord\","
+        + "\"namespace\":\"otherns\","
+        + "\"fields\":"
+        + "[{\"name\":\"field2\",\"type\":\"string\"}]}";
+    schemas.add(reference);
+    String schemaString = "{\"type\":\"record\","
+        + "\"name\":\"myrecord\","
+        + "\"namespace\":\"ns\","
+        + "\"fields\":"
+        + "[{\"name\":\"field1\",\"type\":\"otherns.subrecord\"}]}";
+    schemas.add(schemaString);
+    return schemas;
+  }
+
+  public static String getBadSchema() {
+    String schemaString = "{\"type\":\"bad-record\","
+        + "\"name\":\"myrecord\","
+        + "\"fields\":"
+        + "[{\"type\":\"string\",\"name\":"
+        + "\"f" + random.nextInt(Integer.MAX_VALUE) + "\"}]}";
+    return schemaString;
+  }
+
 }

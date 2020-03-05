@@ -1,18 +1,17 @@
-/**
- * Copyright 2017 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- **/
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
+ */
 package io.confluent.kafka.schemaregistry;
 
 import org.junit.Test;
@@ -27,19 +26,21 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
-import io.confluent.kafka.schemaregistry.avro.AvroCompatibilityLevel;
 import io.confluent.kafka.schemaregistry.client.rest.RestService;
 import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaString;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
+import io.confluent.kafka.schemaregistry.rest.SchemaRegistryConfig;
+import io.confluent.kafka.schemaregistry.storage.Mode;
 import io.confluent.kafka.schemaregistry.utils.TestUtils;
+import io.confluent.kafka.schemaregistry.id.ZookeeperIdGenerator;
 import io.confluent.kafka.schemaregistry.storage.SchemaRegistryIdentity;
-import io.confluent.kafka.schemaregistry.masterelector.zookeeper.ZookeeperMasterElector;
 
-import static io.confluent.kafka.schemaregistry.avro.AvroCompatibilityLevel.FORWARD;
-import static io.confluent.kafka.schemaregistry.avro.AvroCompatibilityLevel.NONE;
+import static io.confluent.kafka.schemaregistry.CompatibilityLevel.FORWARD;
+import static io.confluent.kafka.schemaregistry.CompatibilityLevel.NONE;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -59,7 +60,7 @@ public class MasterElectorTest extends ClusterTestHarness {
         },
         {
             "zookeeper",
-            ZookeeperMasterElector.ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE
+            ZookeeperIdGenerator.ZOOKEEPER_SCHEMA_ID_COUNTER_BATCH_SIZE
         }
     });
   }
@@ -110,13 +111,13 @@ public class MasterElectorTest extends ClusterTestHarness {
     // create schema registry instance 1
     final RestApp restApp1 = new RestApp(port1,
                                          zkConnect(), bootstrapServers(), KAFKASTORE_TOPIC,
-                                         AvroCompatibilityLevel.NONE.name, true, null);
+                                         CompatibilityLevel.NONE.name, true, null);
     restApp1.start();
 
     // create schema registry instance 2
     final RestApp restApp2 = new RestApp(port2,
                                          zkConnect(), bootstrapServers(), KAFKASTORE_TOPIC,
-                                         AvroCompatibilityLevel.NONE.name, true, null);
+                                         CompatibilityLevel.NONE.name, true, null);
     restApp2.start();
     assertTrue("Schema registry instance 1 should be the master", restApp1.isMaster());
     assertFalse("Schema registry instance 2 shouldn't be the master", restApp2.isMaster());
@@ -167,26 +168,26 @@ public class MasterElectorTest extends ClusterTestHarness {
 
     // update config to master
     restApp1.restClient
-        .updateCompatibility(AvroCompatibilityLevel.FORWARD.name, configSubject);
+        .updateCompatibility(CompatibilityLevel.FORWARD.name, configSubject);
     assertEquals("New compatibility level should be FORWARD on the master",
                  FORWARD.name,
                  restApp1.restClient.getConfig(configSubject).getCompatibilityLevel());
 
     // the new config should be eventually readable on the non-master
     waitUntilCompatibilityLevelSet(restApp2.restClient, configSubject,
-                                   AvroCompatibilityLevel.FORWARD.name,
+                                   CompatibilityLevel.FORWARD.name,
                                    "New compatibility level should be FORWARD on the non-master");
 
     // update config to non-master
     restApp2.restClient
-        .updateCompatibility(AvroCompatibilityLevel.NONE.name, configSubject);
+        .updateCompatibility(CompatibilityLevel.NONE.name, configSubject);
     assertEquals("New compatibility level should be NONE on the master",
                  NONE.name,
                  restApp1.restClient.getConfig(configSubject).getCompatibilityLevel());
 
     // the new config should be eventually readable on the non-master
     waitUntilCompatibilityLevelSet(restApp2.restClient, configSubject,
-                                   AvroCompatibilityLevel.NONE.name,
+                                   CompatibilityLevel.NONE.name,
                                    "New compatibility level should be NONE on the non-master");
 
     // fake an incorrect master and registration should fail
@@ -218,7 +219,7 @@ public class MasterElectorTest extends ClusterTestHarness {
     // update config should fail if master is not available
     int updateConfigStatusCodeFromRestApp1 = 0;
     try {
-      restApp1.restClient.updateCompatibility(AvroCompatibilityLevel.FORWARD.name,
+      restApp1.restClient.updateCompatibility(CompatibilityLevel.FORWARD.name,
               configSubject);
       fail("Update config should fail on the master");
     } catch (RestClientException e) {
@@ -228,7 +229,7 @@ public class MasterElectorTest extends ClusterTestHarness {
 
     int updateConfigStatusCodeFromRestApp2 = 0;
     try {
-      restApp2.restClient.updateCompatibility(AvroCompatibilityLevel.FORWARD.name,
+      restApp2.restClient.updateCompatibility(CompatibilityLevel.FORWARD.name,
               configSubject);
       fail("Update config should fail on the non-master");
     } catch (RestClientException e) {
@@ -314,7 +315,7 @@ public class MasterElectorTest extends ClusterTestHarness {
     for (int i = 0; i < numSlaves; i++) {
       RestApp slave = new RestApp(choosePort(),
                                   zkConnect(), bootstrapServers(), KAFKASTORE_TOPIC,
-                                  AvroCompatibilityLevel.NONE.name, false, null);
+                                  CompatibilityLevel.NONE.name, false, null);
       slaveApps.add(slave);
       slave.start();
       aSlave = slave;
@@ -342,7 +343,7 @@ public class MasterElectorTest extends ClusterTestHarness {
     for (int i = 0; i < numMasters; i++) {
       RestApp master = new RestApp(choosePort(),
                                    zkConnect(), bootstrapServers(), KAFKASTORE_TOPIC,
-                                   AvroCompatibilityLevel.NONE.name, true, null);
+                                   CompatibilityLevel.NONE.name, true, null);
       masterApps.add(master);
       master.start();
       waitUntilMasterElectionCompletes(masterApps);
@@ -393,7 +394,7 @@ public class MasterElectorTest extends ClusterTestHarness {
     for (int i = 0; i < numSlaves; i++) {
       RestApp slave = new RestApp(choosePort(),
                                   zkConnect(), bootstrapServers(), KAFKASTORE_TOPIC,
-                                  AvroCompatibilityLevel.NONE.name, false, null);
+                                  CompatibilityLevel.NONE.name, false, null);
       slaveApps.add(slave);
       slave.start();
       aSlave = slave;
@@ -418,7 +419,7 @@ public class MasterElectorTest extends ClusterTestHarness {
     for (int i = 0; i < numMasters; i++) {
       RestApp master = new RestApp(choosePort(),
                                    zkConnect(), bootstrapServers(), KAFKASTORE_TOPIC,
-                                   AvroCompatibilityLevel.NONE.name, true, null);
+                                   CompatibilityLevel.NONE.name, true, null);
       masterApps.add(master);
       master.start();
       aMaster = master;
@@ -479,6 +480,145 @@ public class MasterElectorTest extends ClusterTestHarness {
     }
     assertFalse("Should not be possible to register with no masters present.",
                 successfullyRegistered);
+
+    // Try fetching preregistered ids from slaves - should succeed
+    try {
+
+      for (int id: ids) {
+        SchemaString schemaString = aSlave.restClient.getId(id);
+      }
+      List<Integer> versions = aSlave.restClient.getAllVersions(subject);
+      assertEquals("Number of ids should match number of versions.", ids.size(), versions.size());
+    } catch (RestClientException e) {
+      fail("Should be possible to fetch registered schemas even with no masters present.");
+    }
+
+    for (RestApp slave: slaveApps) {
+      slave.stop();
+    }
+  }
+
+  @Test
+  /**
+   * Test import mode and registration of schemas with version and id when a 'master cluster' and
+   * 'slave cluster' is present. (Slave cluster == all nodes have masterEligibility false)
+   *
+   * If only slaves are alive, registration should fail. If both slave and master cluster are
+   * alive, registration should succeed.
+   *
+   * Fetching by id should succeed in all configurations.
+   */
+  public void testImportOnMasterSlaveClusters() throws Exception {
+    int numSlaves = 4;
+    int numMasters = 4;
+    int numSchemas = 5;
+    String subject = "testSubject";
+    List<String> schemas = TestUtils.getRandomCanonicalAvroString(numSchemas);
+    List<Integer> ids = new ArrayList<Integer>();
+    Properties props = new Properties();
+    props.setProperty(SchemaRegistryConfig.MODE_MUTABILITY, "true");
+    int newId = 100000;
+    int newVersion = 100;
+
+    Set<RestApp> slaveApps = new HashSet<RestApp>();
+    RestApp aSlave = null;
+    for (int i = 0; i < numSlaves; i++) {
+      RestApp slave = new RestApp(choosePort(),
+          zkConnect(), bootstrapServers(), KAFKASTORE_TOPIC,
+          CompatibilityLevel.NONE.name, false, props);
+      slaveApps.add(slave);
+      slave.start();
+      aSlave = slave;
+    }
+    // Sanity check
+    assertNotNull(aSlave);
+
+    // Try to register schemas to a slave - should fail
+    boolean successfullyRegistered = false;
+    try {
+      aSlave.restClient.registerSchema(schemas.get(0), subject, newVersion++, newId++);
+      successfullyRegistered = true;
+    } catch (RestClientException e) {
+      // registration should fail
+    }
+    assertFalse("Should not be possible to register with no masters present.",
+        successfullyRegistered);
+
+    // Make a master-eligible 'cluster'
+    final Set<RestApp> masterApps = new HashSet<RestApp>();
+    RestApp aMaster = null;
+    for (int i = 0; i < numMasters; i++) {
+      RestApp master = new RestApp(choosePort(),
+          zkConnect(), bootstrapServers(), KAFKASTORE_TOPIC,
+          CompatibilityLevel.NONE.name, true, props);
+      masterApps.add(master);
+      master.start();
+      aMaster = master;
+    }
+    assertNotNull(aMaster);
+
+    // Enter import mode
+    try {
+      aMaster.restClient.setMode(Mode.IMPORT.toString());
+    } catch (RestClientException e) {
+      fail("It should be possible to set mode when a master cluster is present.");
+    }
+
+    // Try to register to a master cluster node - should succeed
+    try {
+      for (String schema : schemas) {
+        ids.add(aMaster.restClient.registerSchema(schema, subject, newVersion++, newId++));
+      }
+    } catch (RestClientException e) {
+      fail("It should be possible to register schemas when a master cluster is present. "
+          + "Error: " + e.getMessage());
+    }
+
+    // Try to register to a slave cluster node - should succeed
+    String anotherSchema = TestUtils.getRandomCanonicalAvroString(1).get(0);
+    try {
+      ids.add(aSlave.restClient.registerSchema(anotherSchema, subject, newVersion++, newId++));
+    } catch (RestClientException e) {
+      fail("Should be possible register a schema through slave cluster.");
+    }
+
+    // Verify all ids can be fetched
+    try {
+      for (int id: ids) {
+        waitUntilIdExists(aSlave.restClient, id,
+            String.format("Should be possible to fetch id %d from this slave.", id));
+        waitUntilIdExists(aMaster.restClient, id,
+            String.format("Should be possible to fetch id %d from this master.", id));
+
+        SchemaString slaveResponse = aSlave.restClient.getId(id);
+        SchemaString masterResponse = aMaster.restClient.getId(id);
+        assertEquals(
+            "Master and slave responded with different schemas when queried with the same id.",
+            slaveResponse.getSchemaString(), masterResponse.getSchemaString());
+      }
+    } catch (RestClientException e) {
+      fail("Expected ids were not found in the schema registry.");
+    }
+
+    // Stop everything in the master cluster
+    while (masterApps.size() > 0) {
+      RestApp master = findMaster(masterApps);
+      masterApps.remove(master);
+      master.stop();
+      waitUntilMasterElectionCompletes(masterApps);
+    }
+
+    // Try to register a new schema - should fail
+    anotherSchema = TestUtils.getRandomCanonicalAvroString(1).get(0);
+    successfullyRegistered = false;
+    try {
+      aSlave.restClient.registerSchema(anotherSchema, subject, newVersion++, newId++);
+      successfullyRegistered = true;
+    } catch (RestClientException e) {
+      // should fail
+    }
+    assertFalse("Should not be possible to register with no masters present.",
+        successfullyRegistered);
 
     // Try fetching preregistered ids from slaves - should succeed
     try {

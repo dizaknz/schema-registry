@@ -86,7 +86,7 @@ $ curl -X PUT -H "Content-Type: application/vnd.schemaregistry.v1+json" \
 Installation
 ------------
 
-You can download prebuilt versions of the Kafka REST Proxy as part of the
+You can download prebuilt versions of the schema registry as part of the
 [Confluent Platform](http://confluent.io/downloads/). To install from source,
 follow the instructions in the Development section.
 
@@ -109,6 +109,13 @@ with Maven.
 This project uses the [Google Java code style](https://google.github.io/styleguide/javaguide.html)
 to keep code clean and consistent.
 
+OpenAPI Spec
+------------
+
+OpenAPI (formerly known as Swagger) specifications are built automatically using `swagger-maven-plugin`
+on `compile` phase.
+
+
 Contribute
 ----------
 
@@ -118,4 +125,6 @@ Contribute
 License
 -------
 
-The project is licensed under the Apache 2 license.
+The project is licensed under the [Confluent Community License](LICENSE-ConfluentCommunity), except for client libs,
+which is under the [Apache 2.0 license](LICENSE-Apache).
+See LICENSE file in each subfolder for detailed license agreement.

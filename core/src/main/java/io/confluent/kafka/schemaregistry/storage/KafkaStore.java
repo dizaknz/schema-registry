@@ -1,17 +1,16 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 
 package io.confluent.kafka.schemaregistry.storage;
@@ -33,15 +32,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import io.confluent.kafka.schemaregistry.exceptions.SchemaRegistryException;
 import io.confluent.kafka.schemaregistry.rest.SchemaRegistryConfig;
@@ -63,6 +66,7 @@ public class KafkaStore<K, V> implements Store<K, V> {
   private final Serializer<K, V> serializer;
   private final Store<K, V> localStore;
   private final AtomicBoolean initialized = new AtomicBoolean(false);
+  private final CountDownLatch initLatch = new CountDownLatch(1);
   private final int initTimeout;
   private final int timeout;
   private final String bootstrapBrokers;
@@ -73,6 +77,7 @@ public class KafkaStore<K, V> implements Store<K, V> {
   private final K noopKey;
   private volatile long lastWrittenOffset = -1L;
   private final SchemaRegistryConfig config;
+  private final Lock lock = new ReentrantLock();
 
   public KafkaStore(SchemaRegistryConfig config,
                     StoreUpdateHandler<K, V> storeUpdateHandler,
@@ -109,6 +114,7 @@ public class KafkaStore<K, V> implements Store<K, V> {
       throw new StoreInitializationException(
           "Illegal state while initializing store. Store was already initialized");
     }
+    localStore.init();
 
     createOrVerifySchemaTopic();
 
@@ -130,7 +136,7 @@ public class KafkaStore<K, V> implements Store<K, V> {
     this.kafkaTopicReader =
         new KafkaStoreReaderThread<>(this.bootstrapBrokers, topic, groupId,
                                      this.storeUpdateHandler, serializer, this.localStore,
-                                     this.noopKey, this.config);
+                                     this.producer, this.noopKey, this.config);
     this.kafkaTopicReader.start();
 
     try {
@@ -144,6 +150,7 @@ public class KafkaStore<K, V> implements Store<K, V> {
       throw new StoreInitializationException("Illegal state while initializing store. Store "
                                              + "was already initialized");
     }
+    initLatch.countDown();
   }
 
   public static void addSchemaRegistryConfigsToClientProperties(SchemaRegistryConfig config,
@@ -203,12 +210,12 @@ public class KafkaStore<K, V> implements Store<K, V> {
     }
 
     NewTopic schemaTopicRequest = new NewTopic(topic, 1, (short) schemaTopicReplicationFactor);
-    schemaTopicRequest.configs(
-        Collections.singletonMap(
-            TopicConfig.CLEANUP_POLICY_CONFIG,
-            TopicConfig.CLEANUP_POLICY_COMPACT
-        )
+    Map topicConfigs = new HashMap(config.originalsWithPrefix("kafkastore.topic.config."));
+    topicConfigs.put(
+        TopicConfig.CLEANUP_POLICY_CONFIG,
+        TopicConfig.CLEANUP_POLICY_COMPACT
     );
+    schemaTopicRequest.configs(topicConfigs);
     try {
       admin.createTopics(Collections.singleton(schemaTopicRequest)).all()
           .get(initTimeout, TimeUnit.MILLISECONDS);
@@ -275,9 +282,28 @@ public class KafkaStore<K, V> implements Store<K, V> {
    */
   public void waitUntilKafkaReaderReachesLastOffset(int timeoutMs) throws StoreException {
     long offsetOfLastMessage = getLatestOffset(timeoutMs);
-    log.info("Wait to catch up until the offset of the last message at " + offsetOfLastMessage);
-    kafkaTopicReader.waitUntilOffset(offsetOfLastMessage, timeoutMs, TimeUnit.MILLISECONDS);
-    log.debug("Reached offset at " + offsetOfLastMessage);
+    waitUntilKafkaReaderReachesOffset(offsetOfLastMessage, timeoutMs);
+  }
+
+  /**
+   * Wait until the KafkaStore catches up to the last message for the given subject.
+   */
+  public void waitUntilKafkaReaderReachesLastOffset(String subject, int timeoutMs)
+      throws StoreException {
+    long lastOffset = lastOffset(subject);
+    if (lastOffset == -1) {
+      lastOffset = getLatestOffset(timeoutMs);
+    }
+    waitUntilKafkaReaderReachesOffset(lastOffset, timeoutMs);
+  }
+
+  /**
+   * Wait until the KafkaStore catches up to the given offset in the Kafka topic.
+   */
+  private void waitUntilKafkaReaderReachesOffset(long offset, int timeoutMs) throws StoreException {
+    log.info("Wait to catch up until the offset at " + offset);
+    kafkaTopicReader.waitUntilOffset(offset, timeoutMs, TimeUnit.MILLISECONDS);
+    log.debug("Reached offset at " + offset);
   }
 
   public void markLastWrittenOffsetInvalid() {
@@ -291,11 +317,12 @@ public class KafkaStore<K, V> implements Store<K, V> {
   }
 
   @Override
-  public void put(K key, V value) throws StoreTimeoutException, StoreException {
+  public V put(K key, V value) throws StoreTimeoutException, StoreException {
     assertInitialized();
     if (key == null) {
       throw new StoreException("Key should not be null");
     }
+    V oldValue = get(key);
 
     // write to the Kafka topic
     ProducerRecord<byte[], byte[]> producerRecord = null;
@@ -317,7 +344,10 @@ public class KafkaStore<K, V> implements Store<K, V> {
 
       log.trace("Waiting for the local store to catch up to offset " + recordMetadata.offset());
       this.lastWrittenOffset = recordMetadata.offset();
-      kafkaTopicReader.waitUntilOffset(this.lastWrittenOffset, timeout, TimeUnit.MILLISECONDS);
+      if (key instanceof SubjectKey) {
+        setLastOffset(((SubjectKey) key).getSubject(), recordMetadata.offset());
+      }
+      waitUntilKafkaReaderReachesOffset(recordMetadata.offset(), timeout);
       knownSuccessfulWrite = true;
     } catch (InterruptedException e) {
       throw new StoreException("Put operation interrupted while waiting for an ack from Kafka", e);
@@ -330,9 +360,10 @@ public class KafkaStore<K, V> implements Store<K, V> {
       throw new StoreException("Put operation to Kafka failed", ke);
     } finally {
       if (!knownSuccessfulWrite) {
-        this.lastWrittenOffset = -1L;
+        markLastWrittenOffsetInvalid();
       }
     }
+    return oldValue;
   }
 
   @Override
@@ -351,14 +382,15 @@ public class KafkaStore<K, V> implements Store<K, V> {
   }
 
   @Override
-  public void delete(K key) throws StoreException {
+  public V delete(K key) throws StoreException {
     assertInitialized();
     // deleteSchemaVersion from the Kafka topic by writing a null value for the key
-    put(key, null);
+    return put(key, null);
   }
 
   @Override
   public Iterator<K> getAllKeys() throws StoreException {
+    assertInitialized();
     return localStore.getAllKeys();
   }
 
@@ -374,6 +406,16 @@ public class KafkaStore<K, V> implements Store<K, V> {
     }
     localStore.close();
     log.debug("Kafka store shut down complete");
+  }
+
+  public void waitForInit() throws InterruptedException {
+    if (initLatch.getCount() > 0) {
+      initLatch.await();
+    }
+  }
+
+  public boolean initialized() {
+    return initialized.get();
   }
 
   /**
@@ -423,5 +465,21 @@ public class KafkaStore<K, V> implements Store<K, V> {
     } catch (Exception e) {
       throw new StoreException("Failed to write Noop record to kafka store.", e);
     }
+  }
+
+  public long lastOffset(String subject) {
+    return lastWrittenOffset;
+  }
+
+  public void setLastOffset(String subject, long lastOffset) {
+    this.lastWrittenOffset = lastOffset;
+  }
+
+  public Lock masterLock() {
+    return lock;
+  }
+
+  public Lock lockFor(String subject) {
+    return lock;
   }
 }

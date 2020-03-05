@@ -1,24 +1,28 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 package io.confluent.kafka.schemaregistry.storage;
 
+import io.confluent.kafka.schemaregistry.avro.AvroSchema;
+import io.confluent.kafka.schemaregistry.id.IncrementalIdGenerator;
 import io.confluent.kafka.schemaregistry.rest.SchemaRegistryConfig;
-import kafka.admin.AdminUtils;
-import kafka.admin.RackAwareMode;
-import kafka.log.LogConfig;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.Config;
+import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.config.TopicConfig;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -28,16 +32,26 @@ import org.slf4j.LoggerFactory;
 import io.confluent.kafka.schemaregistry.ClusterTestHarness;
 import io.confluent.kafka.schemaregistry.storage.exceptions.StoreException;
 import io.confluent.kafka.schemaregistry.storage.exceptions.StoreInitializationException;
+import io.confluent.kafka.schemaregistry.storage.serialization.SchemaRegistrySerializer;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Iterator;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertNull;
 
 public class KafkaStoreTest extends ClusterTestHarness {
 
   private static final Logger log = LoggerFactory.getLogger(KafkaStoreTest.class);
+
+  private static final int ADMIN_TIMEOUT_SEC = 60;
 
   @Before
   public void setup() {
@@ -113,7 +127,7 @@ public class KafkaStoreTest extends ClusterTestHarness {
 
   @Test
   public void testSimpleGetAfterFailure() throws Exception {
-    Store<String, String> inMemoryStore = new InMemoryStore<String, String>();
+    Store<String, String> inMemoryStore = new InMemoryCache<String, String>();
     KafkaStore<String, String> kafkaStore = StoreUtils.createAndInitKafkaStoreInstance(
         zkConnect,
         inMemoryStore
@@ -188,7 +202,7 @@ public class KafkaStoreTest extends ClusterTestHarness {
 
   @Test
   public void testDeleteAfterRestart() throws Exception {
-    Store<String, String> inMemoryStore = new InMemoryStore<String, String>();
+    Store<String, String> inMemoryStore = new InMemoryCache<String, String>();
     KafkaStore<String, String> kafkaStore = StoreUtils.createAndInitKafkaStoreInstance(
         zkConnect,
         inMemoryStore
@@ -241,7 +255,7 @@ public class KafkaStoreTest extends ClusterTestHarness {
 
   @Test
   public void testCustomGroupIdConfig() throws Exception {
-    Store<String, String> inMemoryStore = new InMemoryStore<String, String>();
+    Store<String, String> inMemoryStore = new InMemoryCache<String, String>();
     String groupId = "test-group-id";
     Properties props = new Properties();
     props.put(SchemaRegistryConfig.KAFKASTORE_GROUP_ID_CONFIG, groupId);
@@ -253,7 +267,7 @@ public class KafkaStoreTest extends ClusterTestHarness {
 
   @Test
   public void testDefaultGroupIdConfig() throws Exception {
-    Store<String, String> inMemoryStore = new InMemoryStore<String, String>();
+    Store<String, String> inMemoryStore = new InMemoryCache<String, String>();
     Properties props = new Properties();
     KafkaStore kafkaStore = StoreUtils.createAndInitKafkaStoreInstance(zkConnect, inMemoryStore, props);
 
@@ -261,14 +275,21 @@ public class KafkaStoreTest extends ClusterTestHarness {
   }
 
   @Test(expected=StoreInitializationException.class)
-  public void testMandatoryCompationPolicy() throws Exception {
+  public void testMandatoryCompactionPolicy() throws Exception {
     Properties kafkaProps = new Properties();
-    Properties topicProps = new Properties();
-    topicProps.put(LogConfig.CleanupPolicyProp(), "delete");
+    Map<String, String> topicProps = new HashMap<>();
+    topicProps.put(TopicConfig.CLEANUP_POLICY_CONFIG, "delete");
 
-    AdminUtils.createTopic(zkUtils, SchemaRegistryConfig.DEFAULT_KAFKASTORE_TOPIC, 1, 1, topicProps, RackAwareMode.Enforced$.MODULE$);
+    NewTopic topic = new NewTopic(SchemaRegistryConfig.DEFAULT_KAFKASTORE_TOPIC, 1, (short) 1);
+    topic.configs(topicProps);
 
-    Store<String, String> inMemoryStore = new InMemoryStore<String, String>();
+    Properties props = new Properties();
+    props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+    try (AdminClient admin = AdminClient.create(props)) {
+      admin.createTopics(Collections.singletonList(topic)).all().get(ADMIN_TIMEOUT_SEC, TimeUnit.SECONDS);
+    }
+
+    Store<String, String> inMemoryStore = new InMemoryCache<String, String>();
 
     KafkaStore kafkaStore = StoreUtils.createAndInitKafkaStoreInstance(zkConnect, inMemoryStore, kafkaProps);
   }
@@ -276,15 +297,271 @@ public class KafkaStoreTest extends ClusterTestHarness {
   @Test(expected=StoreInitializationException.class)
   public void testTooManyPartitions() throws Exception {
     Properties kafkaProps = new Properties();
-    Properties topicProps = new Properties();
-    topicProps.put(LogConfig.CleanupPolicyProp(), "compact");
+    Map<String, String> topicProps = new HashMap<>();
+    topicProps.put(TopicConfig.CLEANUP_POLICY_CONFIG, "compact");
 
-    AdminUtils.createTopic(zkUtils, SchemaRegistryConfig.DEFAULT_KAFKASTORE_TOPIC, 3, 1,
-                           topicProps, RackAwareMode.Enforced$.MODULE$);
+    NewTopic topic = new NewTopic(SchemaRegistryConfig.DEFAULT_KAFKASTORE_TOPIC, 3, (short) 1);
+    topic.configs(topicProps);
 
-    Store<String, String> inMemoryStore = new InMemoryStore<String, String>();
+    Properties props = new Properties();
+    props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+    try (AdminClient admin = AdminClient.create(props)) {
+      admin.createTopics(Collections.singletonList(topic)).all().get(ADMIN_TIMEOUT_SEC, TimeUnit.SECONDS);
+    }
+
+    Store<String, String> inMemoryStore = new InMemoryCache<String, String>();
 
     StoreUtils.createAndInitKafkaStoreInstance(zkConnect, inMemoryStore, kafkaProps);
   }
 
+  @Test
+  public void testTopicAdditionalConfigs() throws Exception {
+    Properties kafkaProps = new Properties();
+    kafkaProps.put("kafkastore.topic.config.delete.retention.ms", "10000");
+    kafkaProps.put("kafkastore.topic.config.segment.ms", "10000");
+    Store<String, String> inMemoryStore = new InMemoryCache<String, String>();
+    StoreUtils.createAndInitKafkaStoreInstance(zkConnect, inMemoryStore, kafkaProps);
+
+    Properties props = new Properties();
+    props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+
+    ConfigResource configResource = new ConfigResource(
+        ConfigResource.Type.TOPIC,
+        SchemaRegistryConfig.DEFAULT_KAFKASTORE_TOPIC
+    );
+    Map<org.apache.kafka.common.config.ConfigResource, Config> topicConfigs;
+    try (AdminClient admin = AdminClient.create(props)) {
+      topicConfigs = admin.describeConfigs(Collections.singleton(configResource))
+          .all().get(ADMIN_TIMEOUT_SEC, TimeUnit.SECONDS);
+    }
+
+    Config config = topicConfigs.get(configResource);
+    assertNotNull(config.get("delete.retention.ms"));
+    assertEquals("10000",config.get("delete.retention.ms").value());
+    assertNotNull(config.get("segment.ms"));
+    assertEquals("10000",config.get("segment.ms").value());
+  }
+
+  @Test
+  public void testGetAlwaysTrueHostnameVerifierWhenSslEndpointIdentificationAlgorithmIsNotSet() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+            config,
+            new SchemaRegistrySerializer()
+    );
+
+    assertTrue(schemaRegistry.getHostnameVerifier().verify("", null));
+  }
+
+  @Test
+  public void testGetAlwaysTrueHostnameVerifierWhenSslEndpointIdentificationAlgorithmIsNone() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+    props.put(SchemaRegistryConfig.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "none");
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+            config,
+            new SchemaRegistrySerializer()
+    );
+
+    assertTrue(schemaRegistry.getHostnameVerifier().verify("", null));
+  }
+
+  @Test
+  public void testGetAlwaysTrueHostnameVerifierWhenSslEndpointIdentificationAlgorithmIsEmptyString() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+    props.put(SchemaRegistryConfig.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "");
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+            config,
+            new SchemaRegistrySerializer()
+    );
+
+    assertTrue(schemaRegistry.getHostnameVerifier().verify("", null));
+  }
+
+  @Test
+  public void testGetNullHostnameVerifierWhenSslEndpointIdentificationAlgorithmIsHttps() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+    props.put(SchemaRegistryConfig.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "https");
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+            config,
+            new SchemaRegistrySerializer()
+    );
+
+    assertNull(schemaRegistry.getHostnameVerifier());
+  }
+
+  @Test
+  public void testKafkaStoreMessageHandlerSameIdDifferentSchema() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+        config,
+        new SchemaRegistrySerializer()
+    );
+
+    KafkaStore<SchemaRegistryKey, SchemaRegistryValue> kafkaStore = schemaRegistry.kafkaStore;
+    kafkaStore.init();
+    int id = 100;
+    kafkaStore.put(new SchemaKey("subject", 1),
+        new SchemaValue("subject", 1, id, "schemaString", false)
+    );
+    kafkaStore.put(new SchemaKey("subject2", 1),
+        new SchemaValue("subject2", 1, id, "schemaString2", false)
+    );
+    int size = 0;
+    for (Iterator<SchemaRegistryKey> iter = kafkaStore.getAllKeys(); iter.hasNext(); ) {
+      size++;
+      iter.next();
+    }
+    assertEquals(1, size);
+  }
+
+  @Test
+  public void testKafkaStoreMessageHandlerSameIdSameSchema() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+        config,
+        new SchemaRegistrySerializer()
+    );
+
+    KafkaStore<SchemaRegistryKey, SchemaRegistryValue> kafkaStore = schemaRegistry.kafkaStore;
+    kafkaStore.init();
+    int id = 100;
+    kafkaStore.put(new SchemaKey("subject", 1),
+        new SchemaValue("subject", 1, id, "schemaString", false)
+    );
+    kafkaStore.put(new SchemaKey("subject2", 1),
+        new SchemaValue("subject2", 1, id, "schemaString", false)
+    );
+    int size = 0;
+    for (Iterator<SchemaRegistryKey> iter = kafkaStore.getAllKeys(); iter.hasNext(); ) {
+      size++;
+      iter.next();
+    }
+    assertEquals(2, size);
+  }
+
+  @Test
+  public void testKafkaStoreMessageHandlerSameIdDifferentDeletedSchema() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+        config,
+        new SchemaRegistrySerializer()
+    );
+
+    KafkaStore<SchemaRegistryKey, SchemaRegistryValue> kafkaStore = schemaRegistry.kafkaStore;
+    kafkaStore.init();
+    int id = 100;
+    kafkaStore.put(new SchemaKey("subject", 1),
+        new SchemaValue("subject", 1, id, "schemaString", false)
+    );
+    kafkaStore.put(new SchemaKey("subject", 1),
+        new SchemaValue("subject", 1, id, "schemaString", true)
+    );
+    kafkaStore.put(new SchemaKey("subject2", 1),
+        new SchemaValue("subject2", 1, id, "schemaString2", false)
+    );
+    int size = 0;
+    for (Iterator<SchemaRegistryKey> iter = kafkaStore.getAllKeys(); iter.hasNext(); ) {
+      size++;
+      iter.next();
+    }
+    assertEquals(1, size);
+  }
+
+  @Test
+  public void testKafkaStoreMessageHandlerSameIdSameDeletedSchema() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+        config,
+        new SchemaRegistrySerializer()
+    );
+
+    KafkaStore<SchemaRegistryKey, SchemaRegistryValue> kafkaStore = schemaRegistry.kafkaStore;
+    kafkaStore.init();
+    int id = 100;
+    kafkaStore.put(new SchemaKey("subject", 1),
+        new SchemaValue("subject", 1, id, "schemaString", false)
+    );
+    kafkaStore.put(new SchemaKey("subject", 1),
+        new SchemaValue("subject", 1, id, "schemaString", true)
+    );
+    kafkaStore.put(new SchemaKey("subject2", 1),
+        new SchemaValue("subject2", 1, id, "schemaString", false)
+    );
+    int size = 0;
+    for (Iterator<SchemaRegistryKey> iter = kafkaStore.getAllKeys(); iter.hasNext(); ) {
+      size++;
+      iter.next();
+    }
+    assertEquals(2, size);
+  }
+
+  // Test no NPE happens when handling DeleteSubjectKey with null value
+  @Test
+  public void testKafkaStoreMessageHandlerDeleteSubjectKeyNullValue() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+            config,
+            new SchemaRegistrySerializer()
+    );
+
+    KafkaStoreMessageHandler storeMessageHandler = new KafkaStoreMessageHandler(schemaRegistry,
+            new InMemoryCache<>(), new IncrementalIdGenerator());
+
+    storeMessageHandler.handleUpdate(new DeleteSubjectKey("test"), null, null);
+  }
+
+  // Test no NPE happens when handling ClearSubjectKey with null value
+  @Test
+  public void testKafkaStoreMessageHandlerClearSubjectKeyNullValue() throws Exception {
+    Properties props = new Properties();
+    props.put(SchemaRegistryConfig.KAFKASTORE_CONNECTION_URL_CONFIG, zkConnect);
+    props.put(SchemaRegistryConfig.KAFKASTORE_TOPIC_CONFIG, ClusterTestHarness.KAFKASTORE_TOPIC);
+
+    SchemaRegistryConfig config = new SchemaRegistryConfig(props);
+    KafkaSchemaRegistry schemaRegistry = new KafkaSchemaRegistry(
+            config,
+            new SchemaRegistrySerializer()
+    );
+
+    KafkaStoreMessageHandler storeMessageHandler = new KafkaStoreMessageHandler(schemaRegistry,
+            new InMemoryCache<>(), new IncrementalIdGenerator());
+
+    storeMessageHandler.handleUpdate(new ClearSubjectKey("test"), null, null);
+  }
 }

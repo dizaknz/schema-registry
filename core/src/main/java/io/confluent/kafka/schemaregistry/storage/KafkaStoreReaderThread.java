@@ -1,17 +1,16 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 
 package io.confluent.kafka.schemaregistry.storage;
@@ -23,6 +22,9 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.RecordTooLargeException;
@@ -65,6 +67,7 @@ public class KafkaStoreReaderThread<K, V> extends ShutdownableThread {
   private final ReentrantLock offsetUpdateLock;
   private final Condition offsetReachedThreshold;
   private Consumer<byte[], byte[]> consumer;
+  private final Producer<byte[], byte[]> producer;
   private long offsetInSchemasTopic = -1L;
   // Noop key is only used to help reliably determine last offset; reader thread ignores 
   // messages with this key
@@ -78,6 +81,7 @@ public class KafkaStoreReaderThread<K, V> extends ShutdownableThread {
                                 StoreUpdateHandler<K, V> storeUpdateHandler,
                                 Serializer<K, V> serializer,
                                 Store<K, V> localStore,
+                                Producer<byte[], byte[]> producer,
                                 K noopKey,
                                 SchemaRegistryConfig config) {
     super("kafka-store-reader-thread-" + topic, false);  // this thread is not interruptible
@@ -88,6 +92,7 @@ public class KafkaStoreReaderThread<K, V> extends ShutdownableThread {
     this.storeUpdateHandler = storeUpdateHandler;
     this.serializer = serializer;
     this.localStore = localStore;
+    this.producer = producer;
     this.noopKey = noopKey;
 
     KafkaStore.addSchemaRegistryConfigsToClientProperties(config, consumerProps);
@@ -102,6 +107,7 @@ public class KafkaStoreReaderThread<K, V> extends ShutdownableThread {
     consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
                       org.apache.kafka.common.serialization.ByteArrayDeserializer.class);
 
+    log.info("Kafka store reader thread starting consumer");
     this.consumer = new KafkaConsumer<>(consumerProps);
 
     // Include a few retries since topic creation may take some time to propagate and schema
@@ -137,8 +143,7 @@ public class KafkaStoreReaderThread<K, V> extends ShutdownableThread {
 
     log.info("Initialized last consumed offset to " + offsetInSchemasTopic);
 
-    log.debug("Kafka store reader thread started with consumer properties "
-              + consumerProps.toString());
+    log.debug("Kafka store reader thread started");
   }
 
   @Override
@@ -150,7 +155,8 @@ public class KafkaStoreReaderThread<K, V> extends ShutdownableThread {
         try {
           messageKey = this.serializer.deserializeKey(record.key());
         } catch (SerializationException e) {
-          log.error("Failed to deserialize the schema or config key", e);
+          log.error("Failed to deserialize the schema or config key at offset "
+                  + record.offset(), e);
           continue;
         }
 
@@ -170,7 +176,8 @@ public class KafkaStoreReaderThread<K, V> extends ShutdownableThread {
                 record.value() == null ? null
                                        : serializer.deserializeValue(messageKey, record.value());
           } catch (SerializationException e) {
-            log.error("Failed to deserialize a schema or config update", e);
+            log.error("Failed to deserialize a schema or config update at offset "
+                    + record.offset(), e);
             continue;
           }
           try {
@@ -179,12 +186,31 @@ public class KafkaStoreReaderThread<K, V> extends ShutdownableThread {
                       + ","
                       + message
                       + ") to the local store");
-            if (message == null) {
-              localStore.delete(messageKey);
+            boolean valid = this.storeUpdateHandler.validateUpdate(messageKey, message);
+            if (valid) {
+              V oldMessage;
+              if (message == null) {
+                oldMessage = localStore.delete(messageKey);
+              } else {
+                oldMessage = localStore.put(messageKey, message);
+              }
+              this.storeUpdateHandler.handleUpdate(messageKey, message, oldMessage);
             } else {
-              localStore.put(messageKey, message);
+              if (localStore.get(messageKey) == null) {
+                try {
+                  ProducerRecord<byte[], byte[]> producerRecord = new ProducerRecord<>(
+                      topic,
+                      0,
+                      record.key(),
+                      null
+                  );
+                  producer.send(producerRecord);
+                  log.debug("Tombstoned invalid key {}", messageKey);
+                } catch (KafkaException ke) {
+                  log.warn("Failed to tombstone invalid key {}", messageKey, ke);
+                }
+              }
             }
-            this.storeUpdateHandler.handleUpdate(messageKey, message);
             try {
               offsetUpdateLock.lock();
               offsetInSchemasTopic = record.offset();

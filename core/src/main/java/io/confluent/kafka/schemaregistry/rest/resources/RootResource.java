@@ -1,17 +1,16 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 
 package io.confluent.kafka.schemaregistry.rest.resources;
@@ -28,7 +27,12 @@ import javax.ws.rs.Produces;
 
 import io.confluent.kafka.schemaregistry.client.rest.Versions;
 
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+
+
 @Path("/")
+@Api(value = "/")
 @Produces(
     {Versions.SCHEMA_REGISTRY_V1_JSON_WEIGHTED, Versions.SCHEMA_REGISTRY_DEFAULT_JSON_WEIGHTED,
      Versions.JSON_WEIGHTED})
@@ -37,6 +41,9 @@ import io.confluent.kafka.schemaregistry.client.rest.Versions;
 public class RootResource {
 
   @GET
+  @ApiOperation(value = "Schema Registry Root Resource",
+      notes = "The Root resource is a no-op.",
+      response = Map.class)
   public Map<String, String> get() {
     // Currently this just provides an endpoint that's a nop and can be used to check for
     // liveness and can be used for tests that need to test the server setup rather than the

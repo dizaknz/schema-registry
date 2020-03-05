@@ -1,5 +1,5 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@ package io.confluent.connect.avro;
 import java.util.HashMap;
 import java.util.Map;
 
-import io.confluent.kafka.serializers.AbstractKafkaAvroSerDeConfig;
+import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 
-public class AvroConverterConfig extends AbstractKafkaAvroSerDeConfig {
+public class AvroConverterConfig extends AbstractKafkaSchemaSerDeConfig {
 
   public AvroConverterConfig(Map<?, ?> props) {
     super(baseConfigDef(), props);

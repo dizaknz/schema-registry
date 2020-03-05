@@ -1,17 +1,16 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 package io.confluent.kafka.schemaregistry;
 
@@ -33,12 +32,12 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Vector;
 
-import io.confluent.kafka.schemaregistry.avro.AvroCompatibilityLevel;
 import io.confluent.kafka.schemaregistry.rest.SchemaRegistryConfig;
+import io.confluent.kafka.schemaregistry.utils.ZkUtils;
+
 import kafka.server.KafkaConfig;
 import kafka.server.KafkaServer;
 import kafka.utils.TestUtils;
-import kafka.utils.ZkUtils;
 import kafka.zk.EmbeddedZookeeper;
 import scala.Option;
 import scala.Option$;
@@ -90,7 +89,6 @@ public abstract class ClusterTestHarness {
   // ZK Config
   protected EmbeddedZookeeper zookeeper;
   protected String zkConnect;
-  protected ZkClient zkClient;
   protected ZkUtils zkUtils;
   protected int zkConnectionTimeout = 30000; // a larger connection timeout is required for SASL tests
                                              // because SASL connections tend to take longer.
@@ -102,7 +100,7 @@ public abstract class ClusterTestHarness {
   protected String brokerList = null;
   protected String bootstrapServers = null;
 
-  protected int schemaRegistryPort;
+  protected Integer schemaRegistryPort;
   protected RestApp restApp = null;
 
   public ClusterTestHarness() {
@@ -114,7 +112,7 @@ public abstract class ClusterTestHarness {
   }
 
   public ClusterTestHarness(int numBrokers, boolean setupRestApp) {
-    this(numBrokers, setupRestApp, AvroCompatibilityLevel.NONE.name);
+    this(numBrokers, setupRestApp, CompatibilityLevel.NONE.name);
   }
 
   public ClusterTestHarness(int numBrokers, boolean setupRestApp, String compatibilityType
@@ -133,15 +131,13 @@ public abstract class ClusterTestHarness {
   public void setUp() throws Exception {
     zookeeper = new EmbeddedZookeeper();
     zkConnect = String.format("localhost:%d", zookeeper.port());
-    zkUtils = ZkUtils.apply(
+    zkUtils = new ZkUtils(
         zkConnect, zkSessionTimeout, zkConnectionTimeout,
         setZkAcls()
     ); // true or false doesn't matter because the schema registry Kafka principal is the same as the
     // Kafka broker principal, so ACLs won't make any difference. The principals are the same because
     // ZooKeeper, Kafka, and the Schema Registry are run in the same process during testing and hence share
-    // the same JAAS configuration file. Read comments in ASLClusterTestHarness.java for more details.
-    zkClient = zkUtils.zkClient();
-
+    // the same JAAS configuration file. Read comments in SASLClusterTestHarness.java for more details.
     configs = new Vector<>();
     servers = new Vector<>();
     for (int i = 0; i < numBrokers; i++) {
@@ -173,16 +169,22 @@ public abstract class ClusterTestHarness {
     bootstrapServers = Utils.join(serverUrls, ",");
 
     if (setupRestApp) {
-      schemaRegistryPort = choosePort();
+      if (schemaRegistryPort == null)
+        schemaRegistryPort = choosePort();
       Properties schemaRegistryProps = getSchemaRegistryProperties();
       schemaRegistryProps.put(SchemaRegistryConfig.LISTENERS_CONFIG, getSchemaRegistryProtocol() +
                                                                      "://0.0.0.0:"
                                                                      + schemaRegistryPort);
-      restApp = new RestApp(schemaRegistryPort, zkConnect, null, KAFKASTORE_TOPIC,
-                            compatibilityType, true, schemaRegistryProps);
-      restApp.start();
+      schemaRegistryProps.put(SchemaRegistryConfig.MODE_MUTABILITY, true);
+      setupRestApp(schemaRegistryProps);
 
     }
+  }
+
+  protected void setupRestApp(Properties schemaRegistryProps) throws Exception {
+    restApp = new RestApp(schemaRegistryPort, zkConnect, null, KAFKASTORE_TOPIC,
+                          compatibilityType, true, schemaRegistryProps);
+    restApp.start();
   }
 
   protected Properties getSchemaRegistryProperties() {
@@ -216,7 +218,9 @@ public abstract class ClusterTestHarness {
         TestUtils.RandomPort(),
         Option.<String>empty(),
         1,
-        false
+        false,
+        1,
+        (short) 1
     );
     injectProperties(props);
     return KafkaConfig.fromProps(props);

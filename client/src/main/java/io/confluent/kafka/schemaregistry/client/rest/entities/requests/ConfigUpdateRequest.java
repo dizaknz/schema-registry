@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Confluent Inc.
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,18 +17,24 @@
 package io.confluent.kafka.schemaregistry.client.rest.entities.requests;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.databind.ObjectMapper;
+
+import io.swagger.annotations.ApiModelProperty;
 
 import java.io.IOException;
+
+import io.confluent.kafka.schemaregistry.utils.JacksonMapper;
 
 public class ConfigUpdateRequest {
 
   private String compatibilityLevel;
 
   public static ConfigUpdateRequest fromJson(String json) throws IOException {
-    return new ObjectMapper().readValue(json, ConfigUpdateRequest.class);
+    return JacksonMapper.INSTANCE.readValue(json, ConfigUpdateRequest.class);
   }
 
+  @ApiModelProperty(value = "Compatability Level",
+      allowableValues = "BACKWARD, BACKWARD_TRANSITIVE, FORWARD, FORWARD_TRANSITIVE, FULL, "
+          + "FULL_TRANSITIVE, NONE")
   @JsonProperty("compatibility")
   public String getCompatibilityLevel() {
     return this.compatibilityLevel;
@@ -40,6 +46,6 @@ public class ConfigUpdateRequest {
   }
 
   public String toJson() throws IOException {
-    return new ObjectMapper().writeValueAsString(this);
+    return JacksonMapper.INSTANCE.writeValueAsString(this);
   }
 }

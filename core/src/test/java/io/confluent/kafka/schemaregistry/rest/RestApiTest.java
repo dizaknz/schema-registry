@@ -1,25 +1,28 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 package io.confluent.kafka.schemaregistry.rest;
 
 import io.confluent.kafka.schemaregistry.ClusterTestHarness;
-import io.confluent.kafka.schemaregistry.avro.AvroCompatibilityLevel;
+import io.confluent.kafka.schemaregistry.CompatibilityLevel;
 import io.confluent.kafka.schemaregistry.avro.AvroUtils;
 import io.confluent.kafka.schemaregistry.client.rest.RestService;
 import io.confluent.kafka.schemaregistry.client.rest.entities.Schema;
+import io.confluent.kafka.schemaregistry.client.rest.entities.ServerClusterId;
+import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaReference;
+import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaString;
+import io.confluent.kafka.schemaregistry.client.rest.entities.SubjectVersion;
 import io.confluent.kafka.schemaregistry.client.rest.entities.requests.RegisterSchemaRequest;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
 import io.confluent.kafka.schemaregistry.rest.exceptions.Errors;
@@ -32,12 +35,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 
-import static io.confluent.kafka.schemaregistry.avro.AvroCompatibilityLevel.FORWARD;
-import static io.confluent.kafka.schemaregistry.avro.AvroCompatibilityLevel.NONE;
+import static io.confluent.kafka.schemaregistry.CompatibilityLevel.FORWARD;
+import static io.confluent.kafka.schemaregistry.CompatibilityLevel.NONE;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -167,18 +173,18 @@ public class RestApiTest extends ClusterTestHarness {
                            + "\"fields\":"
                            + "[{\"type\":\"string\",\"name\":"
                            + "\"f" + "\"}]}";
-    String schema1 = AvroUtils.parseSchema(schema1String).canonicalString;
+    String schema1 = AvroUtils.parseSchema(schema1String).canonicalString();
 
     String schema2String = "{\"type\":\"record\","
                            + "\"name\":\"myrecord\","
                            + "\"fields\":"
                            + "[{\"type\":\"int\",\"name\":"
                            + "\"f" + "\"}]}";
-    String schema2 = AvroUtils.parseSchema(schema2String).canonicalString;
+    String schema2 = AvroUtils.parseSchema(schema2String).canonicalString();
 
     // ensure registering incompatible schemas will raise an error
     restApp.restClient.updateCompatibility(
-        AvroCompatibilityLevel.FULL.name, subject);
+        CompatibilityLevel.FULL.name, subject);
 
     // test that compatibility check for incompatible schema returns false and the appropriate 
     // error response from Avro
@@ -202,18 +208,18 @@ public class RestApiTest extends ClusterTestHarness {
                            + "\"fields\":"
                            + "[{\"type\":\"string\",\"name\":"
                            + "\"f" + "\"}]}";
-    String schema1 = AvroUtils.parseSchema(schemaString1).canonicalString;
+    String schema1 = AvroUtils.parseSchema(schemaString1).canonicalString();
     String schemaString2 = "{\"type\":\"record\","
                            + "\"name\":\"myrecord\","
                            + "\"fields\":"
                            + "[{\"type\":\"int\",\"name\":"
                            + "\"foo" + "\"}]}";
-    String schema2 = AvroUtils.parseSchema(schemaString2).canonicalString;
+    String schema2 = AvroUtils.parseSchema(schemaString2).canonicalString();
 
     restApp.restClient.updateCompatibility(
-        AvroCompatibilityLevel.NONE.name, subject1);
+        CompatibilityLevel.NONE.name, subject1);
     restApp.restClient.updateCompatibility(
-        AvroCompatibilityLevel.NONE.name, subject2);
+        CompatibilityLevel.NONE.name, subject2);
 
     int idOfRegisteredSchema1Subject1 =
         restApp.restClient.registerSchema(schema1, subject1);
@@ -253,7 +259,7 @@ public class RestApiTest extends ClusterTestHarness {
                  restApp.restClient.getConfig(null).getCompatibilityLevel());
 
     // change it to forward
-    restApp.restClient.updateCompatibility(AvroCompatibilityLevel.FORWARD.name, null);
+    restApp.restClient.updateCompatibility(CompatibilityLevel.FORWARD.name, null);
 
     assertEquals("New compatibility level should be forward for this test instance",
                  FORWARD.name,
@@ -264,7 +270,7 @@ public class RestApiTest extends ClusterTestHarness {
   public void testNonExistentSubjectConfigChange() throws Exception {
     String subject = "testSubject";
     try {
-      restApp.restClient.updateCompatibility(AvroCompatibilityLevel.FORWARD.name, subject);
+      restApp.restClient.updateCompatibility(CompatibilityLevel.FORWARD.name, subject);
     } catch (RestClientException e) {
       fail("Changing config for an invalid subject should succeed");
     }
@@ -281,7 +287,7 @@ public class RestApiTest extends ClusterTestHarness {
                  restApp.restClient.getConfig(null).getCompatibilityLevel());
 
     // change subject compatibility to forward
-    restApp.restClient.updateCompatibility(AvroCompatibilityLevel.FORWARD.name, subject);
+    restApp.restClient.updateCompatibility(CompatibilityLevel.FORWARD.name, subject);
 
     assertEquals("Global compatibility level should remain none for this test instance",
                  NONE.name,
@@ -306,6 +312,26 @@ public class RestApiTest extends ClusterTestHarness {
                    Errors.SCHEMA_NOT_FOUND_ERROR_CODE,
                    rce.getErrorCode());
     }
+  }
+
+  @Test
+  public void testGetSchemaWithFetchMaxId() throws Exception {
+    List<String> schemas = TestUtils.getRandomCanonicalAvroString(3);
+    int latestId = 0;
+
+    for (String schema : schemas) {
+      latestId = restApp.restClient.registerSchema(schema, "subject");
+    }
+
+    // if fetchMaxId is not provided then the maxId is null
+    assertNull(restApp.restClient.getId(1).getMaxId());
+    assertEquals(Integer.valueOf(latestId), restApp.restClient.getId(1, true).getMaxId());
+  }
+
+  @Test
+  public void testGetSchemaTypes() throws Exception {
+    assertEquals(new HashSet<>(Arrays.asList("AVRO", "JSON", "PROTOBUF")),
+        new HashSet<>(restApp.restClient.getSchemaTypes()));
   }
 
   @Test
@@ -419,6 +445,104 @@ public class RestApiTest extends ClusterTestHarness {
   }
 
   @Test
+  public void testSchemaReferences() throws Exception {
+    List<String> schemas = TestUtils.getAvroSchemaWithReferences();
+    String subject = "reference";
+    TestUtils.registerAndVerifySchema(restApp.restClient, schemas.get(0), 1, subject);
+
+    RegisterSchemaRequest request = new RegisterSchemaRequest();
+    request.setSchema(schemas.get(1));
+    SchemaReference ref = new SchemaReference("otherns.subrecord", "reference", 1);
+    request.setReferences(Collections.singletonList(ref));
+    int registeredId = restApp.restClient.registerSchema(request, "referrer");
+    assertEquals("Registering a new schema should succeed", 2, registeredId);
+
+    SchemaString schemaString = restApp.restClient.getId(2);
+    // the newly registered schema should be immediately readable on the master
+    assertEquals("Registered schema should be found",
+        schemas.get(1),
+        schemaString.getSchemaString());
+
+    assertEquals("Schema references should be found",
+        Collections.singletonList(ref),
+        schemaString.getReferences());
+
+    List<Integer> refs = restApp.restClient.getReferencedBy("reference", 1);
+    assertEquals(2, refs.get(0).intValue());
+
+    try {
+      restApp.restClient.deleteSchemaVersion(RestService.DEFAULT_REQUEST_PROPERTIES,
+          "reference",
+          String.valueOf(1)
+      );
+      fail("Deleting reference should fail with " + Errors.REFERENCE_EXISTS_ERROR_CODE);
+    } catch (RestClientException rce) {
+      assertEquals("Reference found",
+          Errors.REFERENCE_EXISTS_ERROR_CODE,
+          rce.getErrorCode());
+    }
+
+    assertEquals((Integer) 1, restApp.restClient
+        .deleteSchemaVersion
+            (RestService.DEFAULT_REQUEST_PROPERTIES, "referrer", "1"));
+
+    refs = restApp.restClient.getReferencedBy("reference", 1);
+    assertTrue(refs.isEmpty());
+
+    assertEquals((Integer) 1, restApp.restClient
+        .deleteSchemaVersion
+            (RestService.DEFAULT_REQUEST_PROPERTIES, "reference", "1"));
+  }
+
+  @Test(expected = RestClientException.class)
+  public void testSchemaMissingReferences() throws Exception {
+    List<String> schemas = TestUtils.getAvroSchemaWithReferences();
+
+    RegisterSchemaRequest request = new RegisterSchemaRequest();
+    request.setSchema(schemas.get(1));
+    request.setReferences(Collections.emptyList());
+    restApp.restClient.registerSchema(request, "referrer");
+  }
+
+  @Test
+  public void testBad() throws Exception {
+    String subject1 = "testTopic1";
+    List<String> allSubjects = new ArrayList<String>();
+
+    // test getAllSubjects with no existing data
+    assertEquals("Getting all subjects should return empty",
+        allSubjects,
+        restApp.restClient.getAllSubjects()
+    );
+
+    try {
+      TestUtils.registerAndVerifySchema(restApp.restClient, TestUtils.getBadSchema(), 1, subject1);
+      fail("Registering bad schema should fail with " + Errors.INVALID_SCHEMA_ERROR_CODE);
+    } catch (RestClientException rce) {
+      assertEquals("Invalid schema",
+          Errors.INVALID_SCHEMA_ERROR_CODE,
+          rce.getErrorCode());
+    }
+
+    try {
+      TestUtils.registerAndVerifySchema(restApp.restClient,
+          TestUtils.getRandomCanonicalAvroString(1).get(0),
+          Arrays.asList(new SchemaReference("bad", "bad", 100)), 1, subject1);
+      fail("Registering bad reference should fail with " + Errors.INVALID_SCHEMA_ERROR_CODE);
+    } catch (RestClientException rce) {
+      assertEquals("Invalid schema",
+          Errors.INVALID_SCHEMA_ERROR_CODE,
+          rce.getErrorCode());
+    }
+
+    // test getAllSubjects with existing data
+    assertEquals("Getting all subjects should match all registered subjects",
+        allSubjects,
+        restApp.restClient.getAllSubjects()
+    );
+  }
+
+  @Test
   public void testLookUpSchemaUnderNonExistentSubject() throws Exception {
     String schema = TestUtils.getRandomCanonicalAvroString(1).get(0);
     try {
@@ -438,7 +562,7 @@ public class RestApiTest extends ClusterTestHarness {
     String subject = "test";
     List<String> schemas = TestUtils.getRandomCanonicalAvroString(2);
     TestUtils.registerAndVerifySchema(restApp.restClient, schemas.get(0), 1, subject);
-    restApp.restClient.updateCompatibility(AvroCompatibilityLevel.NONE.name, subject);
+    restApp.restClient.updateCompatibility(CompatibilityLevel.NONE.name, subject);
 
     try {
       restApp.restClient.lookUpSubjectVersion(schemas.get(1), subject);
@@ -448,6 +572,48 @@ public class RestApiTest extends ClusterTestHarness {
     } catch (RestClientException rce) {
       assertEquals("Schema not found", Errors.SCHEMA_NOT_FOUND_ERROR_CODE, rce.getErrorCode());
     }
+  }
+
+  @Test
+  public void testGetSubjectsAssociatedWithSchemaId() throws Exception {
+    String subject1 = "testTopic1";
+    String subject2 = "testTopic2";
+
+    String schema = TestUtils.getRandomCanonicalAvroString(1).get(0);
+    TestUtils.registerAndVerifySchema(restApp.restClient, schema, 1, subject1);
+    TestUtils.registerAndVerifySchema(restApp.restClient, schema, 1, subject2);
+
+    List<String> associatedSubjects = restApp.restClient.getAllSubjectsById(1);
+    assertEquals(associatedSubjects.size(), 2);
+    assertEquals(Arrays.asList(subject1, subject2), associatedSubjects);
+  }
+
+  @Test
+  public void testGetSubjectsAssociatedWithNotFoundSchemaId() throws Exception {
+    try {
+      restApp.restClient.getAllSubjectsById(1);
+      fail("Getting all subjects associated with id 1 should fail with "
+            + Errors.SCHEMA_NOT_FOUND_ERROR_CODE + " (schema not found)");
+    } catch (RestClientException rce) {
+      assertEquals("Should get a 404 status for non-existing schema",
+              Errors.SCHEMA_NOT_FOUND_ERROR_CODE,
+              rce.getErrorCode());
+    }
+  }
+
+  @Test
+  public void testGetVersionsAssociatedWithSchemaId() throws Exception {
+    String subject1 = "testTopic1";
+    String subject2 = "testTopic2";
+
+    String schema = TestUtils.getRandomCanonicalAvroString(1).get(0);
+    TestUtils.registerAndVerifySchema(restApp.restClient, schema, 1, subject1);
+    TestUtils.registerAndVerifySchema(restApp.restClient, schema, 1, subject2);
+
+    List<SubjectVersion> associatedSubjects = restApp.restClient.getAllVersionsById(1);
+    assertEquals(associatedSubjects.size(), 2);
+    assertTrue(associatedSubjects.contains(new SubjectVersion(subject1, 1)));
+    assertTrue(associatedSubjects.contains(new SubjectVersion(subject2, 1)));
   }
 
   @Test
@@ -690,7 +856,7 @@ public class RestApiTest extends ClusterTestHarness {
                            + "\"fields\":"
                            + "[{\"type\":\"string\",\"name\":"
                            + "\"f" + "\"}]}";
-    String schema1 = AvroUtils.parseSchema(schema1String).canonicalString;
+    String schema1 = AvroUtils.parseSchema(schema1String).canonicalString();
 
     String wrongSchema2String = "{\"type\":\"record\","
                                 + "\"name\":\"myrecord\","
@@ -700,7 +866,7 @@ public class RestApiTest extends ClusterTestHarness {
                                 + "{\"type\":\"string\",\"name\":"
                                 + "\"g\" , \"default\":\"d\"}"
                                 + "]}";
-    String wrongSchema2 = AvroUtils.parseSchema(wrongSchema2String).canonicalString;
+    String wrongSchema2 = AvroUtils.parseSchema(wrongSchema2String).canonicalString();
 
     String correctSchema2String = "{\"type\":\"record\","
                                   + "\"name\":\"myrecord\","
@@ -710,10 +876,10 @@ public class RestApiTest extends ClusterTestHarness {
                                   + "{\"type\":\"int\",\"name\":"
                                   + "\"g\" , \"default\":0}"
                                   + "]}";
-    String correctSchema2 = AvroUtils.parseSchema(correctSchema2String).canonicalString;
+    String correctSchema2 = AvroUtils.parseSchema(correctSchema2String).canonicalString();
     // ensure registering incompatible schemas will raise an error
     restApp.restClient.updateCompatibility(
-        AvroCompatibilityLevel.BACKWARD.name, subject);
+        CompatibilityLevel.BACKWARD.name, subject);
 
     // test that compatibility check for incompatible schema returns false and the appropriate
     // error response from Avro
@@ -758,7 +924,7 @@ public class RestApiTest extends ClusterTestHarness {
                            + "\"fields\":"
                            + "[{\"type\":\"string\",\"name\":"
                            + "\"f" + "\"}]}";
-    String schema1 = AvroUtils.parseSchema(schema1String).canonicalString;
+    String schema1 = AvroUtils.parseSchema(schema1String).canonicalString();
 
     String schema2String = "{\"type\":\"record\","
                            + "\"name\":\"myrecord\","
@@ -768,19 +934,19 @@ public class RestApiTest extends ClusterTestHarness {
                            + "{\"type\":\"string\",\"name\":"
                            + "\"g\" , \"default\":\"d\"}"
                            + "]}";
-    String schema2 = AvroUtils.parseSchema(schema2String).canonicalString;
+    String schema2 = AvroUtils.parseSchema(schema2String).canonicalString();
     restApp.restClient.updateCompatibility(
-        AvroCompatibilityLevel.FULL.name, null);
+        CompatibilityLevel.FULL.name, null);
     restApp.restClient.updateCompatibility(
-        AvroCompatibilityLevel.BACKWARD.name, subject);
+        CompatibilityLevel.BACKWARD.name, subject);
 
     restApp.restClient.registerSchema(schema1, subject);
     restApp.restClient.registerSchema(schema2, subject);
 
     restApp.restClient.deleteSchemaVersion(RestService.DEFAULT_REQUEST_PROPERTIES, subject, "1");
-    assertEquals("Compatibility Level Exists", AvroCompatibilityLevel.BACKWARD.name, restApp
+    assertEquals("Compatibility Level Exists", CompatibilityLevel.BACKWARD.name, restApp
         .restClient.getConfig(subject).getCompatibilityLevel());
-    assertEquals("Top Compatibility Level Exists", AvroCompatibilityLevel.FULL.name, restApp
+    assertEquals("Top Compatibility Level Exists", CompatibilityLevel.FULL.name, restApp
         .restClient.getConfig(null).getCompatibilityLevel());
     restApp.restClient.deleteSchemaVersion(RestService.DEFAULT_REQUEST_PROPERTIES, subject, "2");
     try {
@@ -789,7 +955,7 @@ public class RestApiTest extends ClusterTestHarness {
       assertEquals("Compatibility Level doesn't exist", Errors.SUBJECT_NOT_FOUND_ERROR_CODE, rce
           .getErrorCode());
     }
-    assertEquals("Top Compatibility Level Exists", AvroCompatibilityLevel.FULL.name, restApp
+    assertEquals("Top Compatibility Level Exists", CompatibilityLevel.FULL.name, restApp
         .restClient.getConfig(null).getCompatibilityLevel());
 
   }
@@ -845,7 +1011,7 @@ public class RestApiTest extends ClusterTestHarness {
                            + "\"fields\":"
                            + "[{\"type\":\"string\",\"name\":"
                            + "\"f" + "\"}]}";
-    String schema1 = AvroUtils.parseSchema(schema1String).canonicalString;
+    String schema1 = AvroUtils.parseSchema(schema1String).canonicalString();
 
     String schema2String = "{\"type\":\"record\","
                            + "\"name\":\"myrecord\","
@@ -855,11 +1021,11 @@ public class RestApiTest extends ClusterTestHarness {
                            + "{\"type\":\"string\",\"name\":"
                            + "\"g\" , \"default\":\"d\"}"
                            + "]}";
-    String schema2 = AvroUtils.parseSchema(schema2String).canonicalString;
+    String schema2 = AvroUtils.parseSchema(schema2String).canonicalString();
     restApp.restClient.updateCompatibility(
-        AvroCompatibilityLevel.FULL.name, null);
+        CompatibilityLevel.FULL.name, null);
     restApp.restClient.updateCompatibility(
-        AvroCompatibilityLevel.BACKWARD.name, subject);
+        CompatibilityLevel.BACKWARD.name, subject);
 
     restApp.restClient.registerSchema(schema1, subject);
     restApp.restClient.registerSchema(schema2, subject);
@@ -871,9 +1037,21 @@ public class RestApiTest extends ClusterTestHarness {
       assertEquals("Compatibility Level doesn't exist", Errors.SUBJECT_NOT_FOUND_ERROR_CODE, rce
           .getErrorCode());
     }
-    assertEquals("Top Compatibility Level Exists", AvroCompatibilityLevel.FULL.name, restApp
+    assertEquals("Top Compatibility Level Exists", CompatibilityLevel.FULL.name, restApp
         .restClient.getConfig(null).getCompatibilityLevel());
 
+  }
+
+  @Test
+  public void testGetClusterId() throws Exception {
+    try {
+      ServerClusterId serverClusterId = restApp.restClient.getClusterId();
+      assertEquals("", serverClusterId.getId());
+      assertEquals(Collections.emptyList(), serverClusterId.getScope().get("path"));
+      assertNotNull(serverClusterId.getScope().get("clusters"));
+    } catch (RestClientException rce) {
+      fail("The operation shouldn't have failed");
+    }
   }
 }
 

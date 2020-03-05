@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Confluent Inc.
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import java.util.Map;
 
 import io.confluent.kafka.schemaregistry.client.MockSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
-import io.confluent.kafka.serializers.AbstractKafkaAvroSerDeConfig;
+import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.nullValue;
@@ -38,7 +38,7 @@ public class GenericAvroSerdeTest {
     SchemaRegistryClient schemaRegistryClient = new MockSchemaRegistryClient();
     GenericAvroSerde serde = new GenericAvroSerde(schemaRegistryClient);
     Map<String, Object> serdeConfig = new HashMap<>();
-    serdeConfig.put(AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, "fake");
+    serdeConfig.put(AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, "fake");
     serde.configure(serdeConfig, false);
     return serde;
   }

@@ -1,5 +1,5 @@
-/**
- * Copyright 2015 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,17 +12,18 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- **/
+ */
 
 package io.confluent.kafka.serializers;
 
+
 import io.confluent.common.config.ConfigDef;
-import io.confluent.common.config.ConfigDef.Type;
 import io.confluent.common.config.ConfigDef.Importance;
+import io.confluent.common.config.ConfigDef.Type;
 
 import java.util.Map;
 
-public class KafkaAvroDeserializerConfig extends AbstractKafkaAvroSerDeConfig {
+public class KafkaAvroDeserializerConfig extends AbstractKafkaSchemaSerDeConfig {
 
   public static final String SPECIFIC_AVRO_READER_CONFIG = "specific.avro.reader";
   public static final boolean SPECIFIC_AVRO_READER_DEFAULT = false;

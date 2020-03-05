@@ -1,21 +1,21 @@
-/**
- * Copyright 2017 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- **/
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
+ */
 
 package io.confluent.kafka.schemaregistry.masterelector.kafka;
 
+import org.apache.kafka.clients.ClientDnsLookup;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
@@ -23,6 +23,7 @@ import org.apache.kafka.common.config.ConfigDef;
 import java.util.Map;
 
 import static org.apache.kafka.common.config.ConfigDef.Range.atLeast;
+import static org.apache.kafka.common.config.ConfigDef.ValidString.in;
 
 /**
  * o.a.k AbstractConfig that parses configs that all Kafka clients require.
@@ -42,6 +43,14 @@ class ClientConfig extends AbstractConfig {
 
   static {
     CONFIG = new ConfigDef()
+        .define(CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG,
+                ConfigDef.Type.STRING,
+                ClientDnsLookup.DEFAULT.toString(),
+                in(ClientDnsLookup.DEFAULT.toString(),
+                   ClientDnsLookup.USE_ALL_DNS_IPS.toString(),
+                   ClientDnsLookup.RESOLVE_CANONICAL_BOOTSTRAP_SERVERS_ONLY.toString()),
+                ConfigDef.Importance.MEDIUM,
+                CommonClientConfigs.CLIENT_DNS_LOOKUP_DOC)
         .define(CommonClientConfigs.METADATA_MAX_AGE_CONFIG,
                 ConfigDef.Type.LONG,
                 METADATA_MAX_AGE_DEFAULT,

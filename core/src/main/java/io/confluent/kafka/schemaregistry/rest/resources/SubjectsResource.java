@@ -1,21 +1,24 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
  */
 
 package io.confluent.kafka.schemaregistry.rest.resources;
 
+import io.swagger.annotations.ApiOperation;
+import io.swagger.annotations.ApiParam;
+import io.swagger.annotations.ApiResponse;
+import io.swagger.annotations.ApiResponses;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,9 +41,11 @@ import javax.ws.rs.container.Suspended;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 
+import io.confluent.kafka.schemaregistry.avro.AvroSchema;
 import io.confluent.kafka.schemaregistry.client.rest.Versions;
 import io.confluent.kafka.schemaregistry.client.rest.entities.Schema;
 import io.confluent.kafka.schemaregistry.client.rest.entities.requests.RegisterSchemaRequest;
+import io.confluent.kafka.schemaregistry.exceptions.ReferenceExistsException;
 import io.confluent.kafka.schemaregistry.exceptions.SchemaRegistryException;
 import io.confluent.kafka.schemaregistry.exceptions.SchemaRegistryStoreException;
 import io.confluent.kafka.schemaregistry.rest.exceptions.Errors;
@@ -66,18 +71,35 @@ public class SubjectsResource {
 
   @POST
   @Path("/{subject}")
+  @ApiOperation(value = "Check if a schema has already been registered under the specified subject."
+      + " If so, this returns the schema string along with its globally unique identifier, its "
+      + "version under this subject and the subject name.")
+  @ApiResponses(value = {
+      @ApiResponse(code = 404, message = "Error code 40401 -- Subject not found\n"
+          + "Error code 40403 -- Schema not found"),
+      @ApiResponse(code = 500, message = "Internal server error", response = Schema.class),
+  })
   @PerformanceMetric("subjects.get-schema")
-  public void lookUpSchemaUnderSubject(final @Suspended AsyncResponse asyncResponse,
-                                       @PathParam("subject") String subject,
-                                       @QueryParam("deleted") boolean
-                                           lookupDeletedSchema,
-                                       @NotNull RegisterSchemaRequest request) {
+  public void lookUpSchemaUnderSubject(
+      final @Suspended AsyncResponse asyncResponse,
+      @ApiParam(value = "Subject under which the schema will be registered", required = true)
+        @PathParam("subject") String subject,
+      @QueryParam("deleted") boolean lookupDeletedSchema,
+      @ApiParam(value = "Schema", required = true)
+      @NotNull RegisterSchemaRequest request) {
     // returns version if the schema exists. Otherwise returns 404
-    Schema schema = new Schema(subject, 0, 0, request.getSchema());
+    Schema schema = new Schema(
+        subject,
+        0,
+        -1,
+        request.getSchemaType() != null ? request.getSchemaType() : AvroSchema.TYPE,
+        request.getReferences(),
+        request.getSchema()
+    );
     io.confluent.kafka.schemaregistry.client.rest.entities.Schema matchingSchema = null;
     try {
-      if (!schemaRegistry.listSubjects().contains(subject)) {
-        throw Errors.subjectNotFoundException();
+      if (!schemaRegistry.hasSubjects(subject)) {
+        throw Errors.subjectNotFoundException(subject);
       }
       matchingSchema =
           schemaRegistry.lookUpSchemaUnderSubject(subject, schema, lookupDeletedSchema);
@@ -95,6 +117,9 @@ public class SubjectsResource {
 
   @GET
   @Valid
+  @ApiOperation(value = "Get a list of registered subjects.")
+  @ApiResponses(value = {
+      @ApiResponse(code = 500, message = "Error code 50001 -- Error in the backend datastore")})
   @PerformanceMetric("subjects.list")
   public Set<String> list() {
     try {
@@ -108,17 +133,29 @@ public class SubjectsResource {
 
   @DELETE
   @Path("/{subject}")
+  @ApiOperation(value = "Deletes the specified subject and its associated compatibility level if "
+      + "registered. It is recommended to use this API only when a topic needs to be recycled or "
+      + "in development environment.", response = Integer.class, responseContainer = "List")
+  @ApiResponses(value = {
+      @ApiResponse(code = 404, message = "Error code 40401 -- Subject not found"),
+      @ApiResponse(code = 500, message = "Error code 50001 -- Error in the backend datastore")
+  })
   @PerformanceMetric("subjects.delete-subject")
-  public void deleteSubject(final @Suspended AsyncResponse asyncResponse,
-                            @Context HttpHeaders headers,
-                            @PathParam("subject") String subject) {
+  public void deleteSubject(
+      final @Suspended AsyncResponse asyncResponse,
+      @Context HttpHeaders headers,
+      @ApiParam(value = "the name of the subject", required = true)
+        @PathParam("subject") String subject) {
     List<Integer> deletedVersions;
     try {
-      if (!schemaRegistry.listSubjects().contains(subject)) {
-        throw Errors.subjectNotFoundException();
+      if (!schemaRegistry.hasSubjects(subject)) {
+        throw Errors.subjectNotFoundException(subject);
       }
-      Map<String, String> headerProperties = requestHeaderBuilder.buildRequestHeaders(headers);
+      Map<String, String> headerProperties = requestHeaderBuilder.buildRequestHeaders(
+          headers, schemaRegistry.config().whitelistHeaders());
       deletedVersions = schemaRegistry.deleteSubjectOrForward(headerProperties, subject);
+    } catch (ReferenceExistsException e) {
+      throw Errors.referenceExistsException(e.getMessage());
     } catch (SchemaRegistryException e) {
       throw Errors.schemaRegistryException("Error while deleting the subject " + subject,
                                            e);

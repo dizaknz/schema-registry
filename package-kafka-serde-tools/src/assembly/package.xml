@@ -8,6 +8,8 @@
     <id>package</id>
     <formats>
         <format>dir</format>
+        <format>zip</format>
+        <format>tar.gz</format>
     </formats>
     <includeBaseDirectory>false</includeBaseDirectory>
     <fileSets>
@@ -17,7 +19,8 @@
             <includes>
                 <include>version.txt</include>
                 <include>README*</include>
-                <include>LICENSE*</include>
+                <include>LICENSE</include>
+                <include>LICENSE-Apache</include>
                 <include>NOTICE*</include>
                 <include>licenses/</include>
                 <include>notices/</include>

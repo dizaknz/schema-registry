@@ -1,29 +1,29 @@
-/**
- * Copyright 2017 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- **/
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
+ */
 
 package io.confluent.kafka.schemaregistry.masterelector.kafka;
 
 import org.apache.kafka.clients.ApiVersions;
+import org.apache.kafka.clients.ClientDnsLookup;
 import org.apache.kafka.clients.ClientUtils;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.NetworkClient;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
-import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.internals.ClusterResourceListeners;
 import org.apache.kafka.common.metrics.JmxReporter;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
@@ -37,7 +37,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,7 +55,6 @@ import io.confluent.kafka.schemaregistry.exceptions.SchemaRegistryTimeoutExcepti
 import io.confluent.kafka.schemaregistry.rest.SchemaRegistryConfig;
 import io.confluent.kafka.schemaregistry.storage.KafkaSchemaRegistry;
 import io.confluent.kafka.schemaregistry.storage.MasterElector;
-import io.confluent.kafka.schemaregistry.storage.SchemaIdRange;
 import io.confluent.kafka.schemaregistry.storage.SchemaRegistryIdentity;
 
 public class KafkaGroupMasterElector implements MasterElector, SchemaRegistryRebalanceListener {
@@ -109,23 +107,28 @@ public class KafkaGroupMasterElector implements MasterElector, SchemaRegistryReb
 
       this.metrics = new Metrics(metricConfig, reporters, time);
       this.retryBackoffMs = clientConfig.getLong(CommonClientConfigs.RETRY_BACKOFF_MS_CONFIG);
+      String groupId = config.getString(SchemaRegistryConfig.SCHEMAREGISTRY_GROUP_ID_CONFIG);
+      LogContext logContext = new LogContext("[Schema registry clientId=" + clientId + ", groupId="
+          + groupId + "] ");
       this.metadata = new Metadata(
           retryBackoffMs,
           clientConfig.getLong(CommonClientConfigs.METADATA_MAX_AGE_CONFIG),
-          true
+          logContext,
+          new ClusterResourceListeners()
       );
       List<String> bootstrapServers
           = config.getList(SchemaRegistryConfig.KAFKASTORE_BOOTSTRAP_SERVERS_CONFIG);
-      List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(bootstrapServers);
-      this.metadata.update(Cluster.bootstrap(addresses), Collections.<String>emptySet(), 0);
+      List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(bootstrapServers,
+          clientConfig.getString(CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG));
+      this.metadata.bootstrap(addresses);
       String metricGrpPrefix = "kafka.schema.registry";
 
-      ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(clientConfig);
+      ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(
+          clientConfig,
+          time,
+          logContext);
       long maxIdleMs = clientConfig.getLong(CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_CONFIG);
 
-      String groupId = config.getString(SchemaRegistryConfig.SCHEMAREGISTRY_GROUP_ID_CONFIG);
-      LogContext logContext = new LogContext("[Schema registry clientId=" + clientId + ", groupId="
-                                             + groupId + "] ");
       NetworkClient netClient = new NetworkClient(
           new Selector(maxIdleMs, metrics, time, metricGrpPrefix, channelBuilder, logContext),
           this.metadata,
@@ -136,6 +139,8 @@ public class KafkaGroupMasterElector implements MasterElector, SchemaRegistryReb
           clientConfig.getInt(CommonClientConfigs.SEND_BUFFER_CONFIG),
           clientConfig.getInt(CommonClientConfigs.RECEIVE_BUFFER_CONFIG),
           clientConfig.getInt(CommonClientConfigs.REQUEST_TIMEOUT_MS_CONFIG),
+          ClientDnsLookup.forConfig(
+              clientConfig.getString(CommonClientConfigs.CLIENT_DNS_LOOKUP_CONFIG)),
           time,
           true,
           new ApiVersions(),
@@ -165,7 +170,7 @@ public class KafkaGroupMasterElector implements MasterElector, SchemaRegistryReb
           this
       );
 
-      AppInfoParser.registerAppInfo(JMX_PREFIX, clientId, metrics);
+      AppInfoParser.registerAppInfo(JMX_PREFIX, clientId, metrics, time.milliseconds());
 
       initTimeout = config.getInt(SchemaRegistryConfig.KAFKASTORE_INIT_TIMEOUT_CONFIG);
 
@@ -208,15 +213,6 @@ public class KafkaGroupMasterElector implements MasterElector, SchemaRegistryReb
     }
 
     log.debug("Schema registry group member initialized and joined group");
-  }
-
-  @Override
-  public SchemaIdRange nextRange() throws SchemaRegistryStoreException {
-    int nextId = Math.max(
-        KafkaSchemaRegistry.MIN_VERSION,
-        schemaRegistry.getMaxIdInKafkaStore() + 1
-    );
-    return new SchemaIdRange(nextId, nextId);
   }
 
   @Override
@@ -306,9 +302,9 @@ public class KafkaGroupMasterElector implements MasterElector, SchemaRegistryReb
     // Do final cleanup
     AtomicReference<Throwable> firstException = new AtomicReference<Throwable>();
     this.stopped.set(true);
-    ClientUtils.closeQuietly(coordinator, "coordinator", firstException);
-    ClientUtils.closeQuietly(metrics, "consumer metrics", firstException);
-    ClientUtils.closeQuietly(client, "consumer network client", firstException);
+    closeQuietly(coordinator, "coordinator", firstException);
+    closeQuietly(metrics, "consumer metrics", firstException);
+    closeQuietly(client, "consumer network client", firstException);
     AppInfoParser.unregisterAppInfo(JMX_PREFIX, clientId, metrics);
     if (firstException.get() != null && !swallowException) {
       throw new KafkaException(
@@ -317,6 +313,20 @@ public class KafkaGroupMasterElector implements MasterElector, SchemaRegistryReb
       );
     } else {
       log.debug("The schema registry group member has stopped.");
+    }
+  }
+
+  private static void closeQuietly(AutoCloseable closeable,
+                                   String name,
+                                   AtomicReference<Throwable> firstException
+  ) {
+    if (closeable != null) {
+      try {
+        closeable.close();
+      } catch (Throwable t) {
+        firstException.compareAndSet(null, t);
+        log.error("Failed to close {} with type {}", name, closeable.getClass().getName(), t);
+      }
     }
   }
 }

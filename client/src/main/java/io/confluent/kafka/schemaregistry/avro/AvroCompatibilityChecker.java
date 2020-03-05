@@ -1,5 +1,5 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * @deprecated  Use {@link io.confluent.kafka.schemaregistry.CompatibilityChecker} instead
+ */
+@Deprecated
 public class AvroCompatibilityChecker {
 
   // Check if the new schema can be used to read data produced by the previous schema

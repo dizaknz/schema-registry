@@ -1,5 +1,5 @@
-/**
- * Copyright 2014 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,10 @@
 
 package io.confluent.kafka.schemaregistry.avro;
 
+/**
+ * @deprecated  Use {@link io.confluent.kafka.schemaregistry.CompatibilityLevel} instead
+ */
+@Deprecated
 public enum AvroCompatibilityLevel {
   NONE("NONE", AvroCompatibilityChecker.NO_OP_CHECKER),
   BACKWARD("BACKWARD", AvroCompatibilityChecker.BACKWARD_CHECKER),

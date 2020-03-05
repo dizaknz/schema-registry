@@ -1,25 +1,26 @@
-/**
- * Copyright 2015 Confluent Inc.
+/*
+ * Copyright 2018 Confluent Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under the Confluent Community License (the "License"); you may not use
+ * this file except in compliance with the License.  You may obtain a copy of the
+ * License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.confluent.io/confluent-community-license
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- **/
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations under the License.
+ */
 
 package io.confluent.kafka.schemaregistry.storage;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * Simple wrapper for 16 byte MD5 hash.
@@ -44,10 +45,17 @@ public class MD5 {
   /**
    * Factory method converts String into MD5 object.
    */
-  public static MD5 ofString(String str) {
+  public static MD5 ofString(String str, List<SchemaReference> references) {
     try {
       MessageDigest md = MessageDigest.getInstance("MD5");
       md.update(str.getBytes(StandardCharsets.UTF_8));
+      if (references != null) {
+        for (SchemaReference reference : references) {
+          md.update(reference.getName().getBytes(StandardCharsets.UTF_8));
+          md.update(reference.getSubject().getBytes(StandardCharsets.UTF_8));
+          md.update(ByteBuffer.allocate(4).putInt(reference.getVersion()).array());
+        }
+      }
       return new MD5(md.digest());
     } catch (NoSuchAlgorithmException e) {
       throw new RuntimeException(e);
